@@ -1,0 +1,120 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"sync"
+
+	hex "github.com/mikeyg42/HexGame/models"
+)
+
+type GameEventBus struct {
+	GameID                  string
+	AllSubscriberChannels   map[string]chan []byte
+	Rwm                     sync.RWMutex
+	SubscribersForEachTopic map[Topic]SliceOfSubscribeChans
+	EventChan               chan EvtData // this is the channel that all events are sent to. one per game
+	Context                 context.Context
+	CancelFn                context.CancelFunc
+}
+
+func (geb *GameEventBus) Shutdown() {
+	geb.CancelFn()       // Signal to all goroutines to stop
+	close(geb.eventChan) // Close the event channel
+	// ect......
+
+}
+
+func (geb *GameEventBus) marshalAndForward(inChan chan EvtData) {
+	for {
+		select {
+		case evt, ok := <-inChan:
+			if !ok {
+				return // channel closed
+			}
+
+			// Marshal EvtData to JSON
+			jsonData, err := json.Marshal(evt)
+			if err != nil {
+				// Log error
+				// in developent we should just panic at this point??
+				continue // Skip this message
+			}
+
+			// Send the JSON to outChan
+			geb.Rwm.RLock()
+			sl := geb.SubscribersForEachTopic[evt.topic]
+			geb.Rwm.RUnlock()
+
+			// loop through the slice of all subscribers for that topic and send each one the json data
+			for _, ch := range sl {
+				ch <- jsonData
+			}
+
+		// gracefully shutdown
+		case <-geb.Context.Done():
+			return
+		}
+	}
+}
+
+func (geb *GameEventBus) DefineTopicSubscriptions(topics []hex.Topic) {
+	geb.Rwm.Lock()
+	defer geb.Rwm.Unlock()
+
+	// iterates through each of the topics and appends to the slice of subscribers for that topic those players
+	for _, topic := range topics {
+		subscriberSlice := hex.SliceOfSubscribeChans{}
+		switch topic.topicName {
+		case TimerTopic:
+			// the timer will be the sole publisher to this topic, and the players, and ref will listen
+			subscriberSlice = append(subscriberSlice, geb.allSubscriberChannels["playerA"], geb.allSubscriberChannels["playerB"], geb.allSubscriberChannels["referee"])
+
+		case GameLogicTopic:
+			// the players+ref will publish and subscribe to this topic, as will the memory subscribe
+			subscriberSlice = append(subscriberSlice, geb.allSubscriberChannels["playerA"], geb.allSubscriberChannels["playerB"], geb.allSubscriberChannels["referee"], geb.allSubscriberChannels["memory"])
+
+		case MetagameTopic:
+			// publishers will be the referee. timer and 2 players will listen (timer so it can stop the timer if need be, and players so front end can pause and ack reconnect)
+			subscriberSlice = append(subscriberSlice, geb.allSubscriberChannels["playerA"], geb.allSubscriberChannels["playerB"], geb.allSubscriberChannels["timer"])
+
+		case ResultsTopic:
+			// referee will announce start and end of the game, memory and lobby will listen
+			subscriberSlice = append(subscriberSlice, geb.allSubscriberChannels["memory"], geb.allSubscriberChannels["lobby"])
+		}
+		geb.subscribersForEachTopic[topic] = subscriberSlice
+	}
+
+	return
+}
+
+// This function assumes that messages are formatted as `topic#actual_message`.
+func (geb *GameEventBus) DispatchMessage(rawMsg []byte) {
+	parts := strings.SplitN(string(rawMsg), Delimiter, 2)
+	if len(parts) != 2 {
+		// Handle this error. Maybe log it or return an error.
+		return
+	}
+
+	topic := parts[0]
+	message := parts[1]
+
+	channels, ok := geb.getChannelsForTopic(topic)
+	if !ok {
+		// Handle this case. The topic doesn't exist.
+		return
+	}
+
+	for _, ch := range channels {
+		ch <- []byte(message) // dispatching the actual message without the topic prefix.
+	}
+}
+
+func (geb *GameEventBus) getChannelsForTopic(topic string) ([]chan []byte, bool) {
+	geb.Rwm.RLock()
+	defer geb.Rwm.RUnlock()
+
+	chs, ok := geb.SubscribersForEachTopic[hex.Topic{topicName: topic}]
+	return chs, ok
+}
