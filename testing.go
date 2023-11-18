@@ -1,17 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"testing"
 	"time"
-	"bytes"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	hex "github.com/mikeyg42/HexGame/models"
+	hex "github.com/mikeyg42/HexGame/structures"
 )
 
 const Topic = "event_topic"
@@ -88,11 +88,11 @@ func waitForRecordToAppearInDB(ctx context.Context, uuid uuid.UUID) error {
 
 func TestEventPersister(t *testing.T) {
 	evt := Event{
-		UUID:       uuid.New(),
-		UserID:     "user123",
-		EventType:  "login",
-		EventInfo:  "User logged in",
-		Timestamp:  time.Now(),
+		UUID:      uuid.New(),
+		UserID:    "user123",
+		EventType: "login",
+		EventInfo: "User logged in",
+		Timestamp: time.Now(),
 	}
 
 	data, err := json.Marshal(evt)

@@ -1,20 +1,19 @@
 package main
 
 import (
-	hex "github.com/mikeyg42/HexGame/models"
+	hex "github.com/mikeyg42/HexGame/structures"
 	// "github.com/mikeyg42/HEX/retry"
 
 	// timer "github.com/mikeyg42/HEX/timerpkg"
 	zap "go.uber.org/zap"
 )
 
-const SideLenGameboard = 15
-const maxRetries = 3
+
+
 
 type GameController struct {
 	WorkerID  string
 	MsgChan   chan interface{} // this chan connects the worker to players/front end, tells it when to start a game and it recieved signal that game is over
-	Persister *hex.GameStatePersister
 	Errlog    *zap.Logger
 	GameID    string
 	//	Timer      *timer.TimerControl

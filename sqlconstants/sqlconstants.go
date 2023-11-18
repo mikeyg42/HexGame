@@ -1,15 +1,15 @@
 package models
 
 // Function to register a new user and return their UUID.
-const AddNewUserFunction = `
+const Add_new_user = `
 CREATE OR REPLACE FUNCTION add_new_user(p_username TEXT, p_password_hash TEXT) 
 RETURNS UUID AS $$
 DECLARE
     new_user_id UUID;
 BEGIN
-    INSERT INTO users (user_id, username, password_hash)
-    VALUES (uuid_generate_v4(), p_username, p_password_hash)
-    RETURNING user_id INTO new_user_id;
+INSERT INTO users (user_id, username, password_hash, rank)
+VALUES (uuid_generate_v4(), p_username, p_password_hash, 1000)
+RETURNING user_id INTO new_user_id;
 
     RETURN new_user_id;
 END;
@@ -43,6 +43,22 @@ BEGIN
     
     RETURN new_game_id;
 
+END;
+$$ LANGUAGE plpgsql;
+`
+
+const Delete_game = `
+CREATE OR REPLACE FUNCTION delete_game(p_game_id UUID)
+RETURNS BOOLEAN AS $$
+BEGIN
+    DELETE FROM games
+    WHERE game_id = p_game_id;
+
+    IF FOUND THEN
+        RETURN TRUE;
+    ELSE
+        RETURN FALSE;
+    END IF;
 END;
 $$ LANGUAGE plpgsql;
 `
@@ -130,6 +146,7 @@ const CreateTableSQL_users = `CREATE TABLE IF NOT EXISTS users (
     user_id UUID PRIMARY KEY,
     username TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL
+    rank INT NOT NULL DEFAULT 1000
 );`
 
 const CreateTableSQL_games = `CREATE TABLE IF NOT EXISTS users (
@@ -170,7 +187,7 @@ GRANT INSERT, UPDATE, DELETE ON games, moves TO app_write;
 GRANT SELECT(username, user_id) ON users TO app_read;
 GRANT SELECT(password_hash) ON users TO app_auth;
 `
-5
+
 const GrantExecute = `
 GRANT EXECUTE ON FUNCTION add_new_game(UUID, UUID), fetch_ongoing_games(UUID, UUID), delete_game(UUID) TO app_read, app_write;
 GRANT EXECUTE ON FUNCTION update_game_outcome(UUID, game_outcome), add_new_user(TEXT, TEXT) TO app_write;

@@ -6,9 +6,23 @@ import (
 	"sync"
 
 	"github.com/google/uuid"
-	hex "github.com/mikeyg42/HexGame/models"
+	hex "github.com/mikeyg42/HexGame/structures"
 )
 
+type GameEventBusManager struct {
+	MapGameBuses map[string]*GameEventBus
+	Mu           sync.RWMutex
+}
+
+type MatchmakingTask struct {
+	MatchData      []byte
+	PlayerChannels map[string]chan []byte // a mapping of player IDs to their channels
+	Process        func([]byte, map[string]chan []byte) error
+}
+
+type Pool struct {
+	MatchmakingTasks chan MatchmakingTask
+}
 
 func main() {
 	manager := NewGameEventBusManager()
@@ -37,10 +51,6 @@ func main() {
 
 // manager code
 
-type GameEventBusManager struct {
-	MapGameBuses map[string]*GameEventBus
-	Mu           sync.RWMutex
-}
 
 func NewGameEventBusManager() *hex.GameEventBusManager {
 	return &hex.GameEventBusManager{
@@ -119,14 +129,7 @@ func createAllGameChannels() map[string]chan []byte {
 	return allGameChannels
 }
 
-type MatchmakingTask struct {
-	MatchData      []byte
-	PlayerChannels map[string]chan []byte // a mapping of player IDs to their channels
-	Process        func([]byte, map[string]chan []byte) error
-}
-type Pool struct {
-	MatchmakingTasks chan MatchmakingTask
-}
+
 
 func (manager *hex.GameEventBusManager) CreateRefereePool(maxGoroutines int) *RefereePool {
 	p := &RefereePool{

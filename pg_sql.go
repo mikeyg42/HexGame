@@ -12,12 +12,13 @@ import (
 	"github.com/google/uuid"
 	pgx "github.com/jackc/pgx/v5"
 	pgxpool "github.com/jackc/pgx/v5/pgxpool"
-	hex "github.com/mikeyg42/HexGame/models"
+	hex "github.com/mikeyg42/HexGame/HexGame/structures"
+
 	SQL_namedPreparedStmts "github.com/mikeyg42/HexGame/sqlconstants"
 	pgxUUID "github.com/vgarvardt/pgx-google-uuid/v5"
 )
 
-var _Persister = &hex.MemoryInterface{}
+type MemoryPersister struct{}
 
 const maxReadPoolSize = 10
 const maxWritePoolSize = 10
@@ -26,67 +27,88 @@ const writeTimeout = 2 * time.Second
 const maxRetries = 3
 const retryDelay = 500 * time.Millisecond
 
-type pooledConnections struct {
-	poolConfig       *pgxpool.Config
-	maxReadPoolSize  int
-	maxWritePoolSize int
-	readTimeout      time.Duration
-	writeTimeout     time.Duration
-	readPool         *pgxpool.Pool
-	writePool        *pgxpool.Pool
-}
+const SideLenGameboard = 15
 
-type Game struct {
-	GameID        uuid.UUID `db:"game_id"`
-	PlayerAID     uuid.UUID `db:"playerA_id"`
-	PlayerBID     uuid.UUID `db:"playerB_id"`
-	Outcome       string    `db:"outcome"`
-	GameStartTime time.Time `db:"game_start_time"`
-}
+// ----------------------------------//
+func InitializePostgres() {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-type Move struct {
-	MoveID          int       `db:"move_id"`
-	GameID          uuid.UUID `db:"game_id"`
-	PlayerID        uuid.UUID `db:"player_id"`
-	PlayerCode      string    `db:"player_code"`
-	PlayerGameCode  string    `db:"player_game_code"`
-	MoveDescription string    `db:"move_description"`
-	MoveTime        time.Time `db:"move_time"`
-	// Assuming from the latest three moves function
-	MoveCounter int `db:"move_counter"`
-}
-
-//----------------------------------//
-
-func main() {
-
-	pool, err := definePooledConnections()
+	// Define and initialize connection pools
+	pool, err := definePooledConnections(ctx)
 	if err != nil {
-		panic(err)
+		panic(fmt.Errorf("failed to define pooled connections: %w", err))
+	}
+	defer pool.WritePool.Close()
+	defer pool.ReadPool.Close()
+
+	// Test the connection pools
+	if err := testConnection(ctx, pool.WritePool); err != nil {
+		panic(fmt.Errorf("write pool failed connection test: %w", err))
+	}
+	if err := testConnection(ctx, pool.ReadPool); err != nil {
+		panic(fmt.Errorf("read pool failed connection test: %w", err))
 	}
 
-	ctx := context.Background()
+	// Initialize database schema
+	if err := initializeDatabaseSchema(ctx, pool.WritePool); err != nil {
+		panic(fmt.Errorf("failed to initialize write database schema: %w", err))
+	}
+	if err := initializeDatabaseSchema(ctx, pool.ReadPool); err != nil {
+		panic(fmt.Errorf("failed to initialize read database schema: %w", err))
+	}
 
-	// now we set up the tables and perissions ...
-	initializeDatabaseSchema(ctx, pool.writePool)
+	// Check admin permissions
+	tf, role, err1 := checkAdminPermissions(ctx, pool.WritePool)
+	tf2, role2, err2 := checkAdminPermissions(ctx, pool.ReadPool)
+	if role != "admin" || role2 != "admin" || err1 != nil || err2 != nil || !tf || !tf2 {
+		panic(fmt.Errorf("admin permission check failed: %v, %v", err1, err2))
+	}
+	fmt.Println("Successfully initialized connection pools with admin permissions")
+}
 
-	// now we actually finish finalizing the connection pools
-	currentUser, success := pool.InitializeConnPools(ctx)
-	if success == false {
+func testConnection(ctx context.Context, pool *pgxpool.Pool) error {
+	var dummy int
+	if err := pool.QueryRow(ctx, "SELECT 1").Scan(&dummy); err != nil {
+		return err
+	}
+	return nil
+}
+
+func checkAdminPermissions(ctx context.Context, pool *pgxpool.Pool) (bool, string, error) {
+	var currentUser string
+	err := pool.QueryRow(ctx, "SELECT current_user").Scan(&currentUser)
+	if err != nil {
+		return false, "?", err
+		// handle error
+	}
+
+	if currentUser == "admin" {
+		return true, currentUser, nil
+	}
+
+	if strings.Contains(currentUser, "only") {
+		fmt.Println("Current user is, %s, is trying to initialize a database connection despite being read-only ", currentUser)
+		// indicates read-only permissions
+		return false, currentUser, nil
+	}
+	fmt.Println("Current user is, %s, is trying to initialize a database connection withou admin priv. this shouldnt be allowed!!! ", currentUser)
+	return false, currentUser, fmt.Errorf("unexpected user initializing database connection: %s", currentUser)
+}
+
+// check that the pools are working one at a time
+func PingPooledConnections(ctx context.Context, p *hex.PooledConnections) error {
+	pool := p.WritePool
+	err := pool.Ping(ctx)
+	if err != nil {
+		err = fmt.Errorf("Unable to ping connection writepool: %v\n", err)
 		time.Sleep(retryDelay)
-		currentUser, success = pool.InitializeConnPools(ctx)
-		if success == false {
-			panic(fmt.Errorf("Unable to initialize connection pools after 1 retry as role: \n", currentUser))
+		err2 := pool.Ping(ctx)
+		if err2 != nil {
+			err = fmt.Errorf("Unable to ping connection readpool after retry: %v\n", err2)
 		}
 	}
-
-	defer pool.writePool.Close()
-	defer pool.readPool.Close()
-
-	go func() {
-		// now we need to start waiting for events from the event bus in a goroutine
-
-	}()
+	return err
 }
 
 func initializeDatabaseSchema(ctx context.Context, pool *pgxpool.Pool) error {
@@ -95,10 +117,10 @@ func initializeDatabaseSchema(ctx context.Context, pool *pgxpool.Pool) error {
 	initTables := []string{
 		SQL_namedPreparedStmts.CreateRoles,
 		SQL_namedPreparedStmts.LoadCryptoPkg,
-		SQL_namedPreparedStmts.createGameOutcomeEnum,
-		SQL_namedPreparedStmts.createTableSQL_moves,
-		SQL_namedPreparedStmts.createTableSQL_games,
-		SQL_namedPreparedStmts.createTableSQL_users,
+		SQL_namedPreparedStmts.CreateGameOutcomeEnum,
+		SQL_namedPreparedStmts.CreateTableSQL_moves,
+		SQL_namedPreparedStmts.CreateGameOutcomeEnum,
+		SQL_namedPreparedStmts.CreateGameOutcomeEnum,
 		SQL_namedPreparedStmts.Revoke,
 		SQL_namedPreparedStmts.GrantAccess,
 		SQL_namedPreparedStmts.GrantExecute,
@@ -107,10 +129,18 @@ func initializeDatabaseSchema(ctx context.Context, pool *pgxpool.Pool) error {
 	// Start a new transaction
 	tx, err := pool.Begin(ctx)
 	if err != nil {
-		err := pool.Ping(ctx)
+		pingError := pool.Ping(ctx)
+		if pingError != nil {
+			return fmt.Errorf("before transaction begins, stopped bc unstable connection %v, : %v\n", pool, pingError)
+
+		} else {
+			// try to reconnect and ping again
+
+		}
+
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer func() { // unsure if this is actually necessary but its safe
+	defer func() {
 		if err != nil {
 			tx.Rollback(ctx)
 		}
@@ -133,7 +163,7 @@ func initializeDatabaseSchema(ctx context.Context, pool *pgxpool.Pool) error {
 	return nil
 }
 
-func definePooledConnections() (pooledConnections, error) {
+func definePooledConnections(ctx context.Context) (*hex.PooledConnections, error) {
 
 	// Parse the DSN to a pgxpool.Config struct -- DSN will be regular dsn pulled from env
 	// e.g. //	user=jack password=secret host=pg.example.com port=5432 dbname=mydb sslmode=verify-ca pool_max_conns=10
@@ -150,11 +180,13 @@ func definePooledConnections() (pooledConnections, error) {
 		InsecureSkipVerify: false,      //???,
 	}
 
-	// see this re: prepared statements https://github.com/jackc/pgx/issues/791#issuecomment-660508309
 	poolConfig.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		// log.Println("Connected to database!")
 		// provide type support for google/uuid for your postgresql driver by registering the typemap
-		pgxUUID.Register(conn.PgConn().TypeMap())
-		// prepare statements
+		pgxUUID.Register(conn.TypeMap())
+
+		// prepare your prepared statements
+		// see this re: prepared statements https://github.com/jackc/pgx/issues/791#issuecomment-660508309
 		return makeAvail_NamedPreparedStatements(ctx, conn)
 	}
 
@@ -162,14 +194,48 @@ func definePooledConnections() (pooledConnections, error) {
 		// this should instead be a log!
 		fmt.Println("Closed the connection pool to the database!!")
 	}
+	readPool, err := createReadPool(ctx, poolConfig, maxReadPoolSize)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create read pool: %w", err)
+	}
+	writePool, err := createWritePool(ctx, poolConfig, maxWritePoolSize)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create write pool: %w", err)
+	}
 
-	return pooledConnections{
-		poolConfig:       poolConfig,
-		maxReadPoolSize:  maxReadPoolSize,
-		maxWritePoolSize: maxWritePoolSize,
-		readTimeout:      time.Duration(readTimeout),
-		writeTimeout:     time.Duration(writeTimeout),
+	return &hex.PooledConnections{
+		PoolConfig:       poolConfig,
+		MaxReadPoolSize:  maxReadPoolSize,
+		MaxWritePoolSize: maxWritePoolSize,
+		ReadTimeout:      time.Duration(readTimeout),
+		WriteTimeout:     time.Duration(writeTimeout),
+		ReadPool:         readPool,
+		WritePool:        writePool,
 	}, nil
+}
+
+func createReadPool(ctx context.Context, poolConfig *pgxpool.Config, maxReadPoolSize int) (*pgxpool.Pool, error) {
+	readPool, err := poolWithMaxSize(ctx, poolConfig, maxReadPoolSize)
+	if err != nil {
+		return nil, err
+	}
+	return readPool, nil
+}
+
+func createWritePool(ctx context.Context, poolConfig *pgxpool.Config, maxWritePoolSize int) (*pgxpool.Pool, error) {
+	writePool, err := poolWithMaxSize(ctx, poolConfig, maxWritePoolSize)
+	if err != nil {
+		return nil, err
+	}
+	return writePool, nil
+}
+
+func poolWithMaxSize(ctx context.Context, poolConfig *pgxpool.Config, maxConns int) (pool *pgxpool.Pool, err error) {
+	if maxConns != 0 {
+		poolConfig.MaxConns = int32(maxConns)
+	}
+
+	return pgxpool.NewWithConfig(ctx, poolConfig)
 }
 
 func makeAvail_NamedPreparedStatements(ctx context.Context, conn *pgx.Conn) error {
@@ -177,14 +243,15 @@ func makeAvail_NamedPreparedStatements(ctx context.Context, conn *pgx.Conn) erro
 
 	// Define map of statement name to SQL
 	prepStmts = map[string]string{
-		"FetchOngoingGames":  SQL_namedPreparedStmts.fetch_ongoing_games,
+		"FetchOngoingGames":  SQL_namedPreparedStmts.Fetch_ongoing_games,
 		"FetchMovesByGameID": SQL_namedPreparedStmts.Fetch_all_moves_for_gameID,
 		"FetchAPlayersMoves": SQL_namedPreparedStmts.Fetch_a_particular_players_moves,
 		"Fetch3recentMoves":  SQL_namedPreparedStmts.Fetch_latest_three_moves_in_game,
-		"AddNewUser":         SQL_namedPreparedStmts.AddNewUserFunction,
+		"AddNewUser":         SQL_namedPreparedStmts.Add_new_user,
 		"UpdateGameOutcomes": SQL_namedPreparedStmts.Update_game_outcome,
 		"AddNewGame":         SQL_namedPreparedStmts.Add_new_game,
 		"AddNewMove":         SQL_namedPreparedStmts.Add_new_move,
+		"DeleteGame":         SQL_namedPreparedStmts.Delete_game,
 	}
 
 	for name, sql := range prepStmts {
@@ -210,104 +277,13 @@ func makeAvail_NamedPreparedStatements(ctx context.Context, conn *pgx.Conn) erro
 	return nil
 }
 
-func (p *pooledConnections) InitializeConnPools(ctx context.Context, pool *pgxpool.Pool) (string, bool) {
-	// check permissions first
-	var currentUser string
-	tf, currentUser, err := checkPermissions(pool)
-	if err != nil {
-		panic(fmt.Errorf("Error checking permissions: %v", err))
-	}
-	if tf == false || currentUser != "admin" {
-		fmt.Println("incorrect permissions. InitializeConnPools failed")
-		return currentUser, false
-	}
-
-	// Initialize database connection pools.
-	err = p.create2Pools(ctx)
-	// this adds the two pools to the struct p
-	if err != nil {
-		fmt.Println("Error initializing connection pools: %v", err)
-		return currentUser, false
-	}
-
-	return currentUser, true
-}
-
-func checkPermissions(pool *pgxpool.Pool) (bool, string, error) {
-	var currentUser string
-	err := pool.QueryRow(context.Background(), "SELECT current_user").Scan(&currentUser)
-	if err != nil {
-		return false, "?", err
-		// handle error
-	}
-
-	if currentUser == "admin" {
-		return true, currentUser, nil
-	}
-
-	if strings.Contains(currentUser, "only") {
-		// indicates read-only permissions
-		return false, currentUser, nil
-	}
-	fmt.Println("Current user is, %s, is trying to initialize a database connection. shouldnt be allowed!!! ", currentUser)
-	return false, currentUser, fmt.Errorf("unexpected user initializing database connection: %s", currentUser)
-}
-
-// check that the pools are working one at a time
-func PingPooledConnections(ctx context.Context, p *pooledConnections) error {
-	pool := p.writePool
-	err := pool.Ping(ctx)
-	if err != nil {
-		err = fmt.Errorf("Unable to ping connection writepool: %v\n", err)
-		time.Sleep(retryDelay)
-		err2 := pool.Ping(ctx)
-		if err2 != nil {
-			err = fmt.Errorf("Unable to ping connection readpool after retry: %v\n", err2)
-		}
-	}
-	return err
-}
-
-func (p *pooledConnections) create2Pools(ctx context.Context) (err error) {
-	//Initialize two connection pools, one for read/write
-
-	p.readPool, err = poolWithMaxSize(ctx, p.poolConfig.Copy(), p.maxReadPoolSize)
-	if p.readPool == nil { // if at first you don't succeed, try, try again
-		time.Sleep(retryDelay)
-		p.readPool, err = poolWithMaxSize(ctx, p.poolConfig.Copy(), p.maxReadPoolSize)
-		if err != nil {
-			return err
-		}
-	}
-
-	p.writePool, err = poolWithMaxSize(ctx, p.poolConfig.Copy(), p.maxWritePoolSize)
-	if p.writePool == nil { // try again
-		time.Sleep(retryDelay)
-		p.writePool, err = poolWithMaxSize(ctx, p.poolConfig.Copy(), p.maxWritePoolSize)
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func poolWithMaxSize(ctx context.Context, poolConfig *pgxpool.Config, maxConns int) (pool *pgxpool.Pool, err error) {
-	if maxConns != 0 {
-		poolConfig.MaxConns = int32(maxConns)
-	}
-
-	return pgxpool.NewWithConfig(ctx, poolConfig)
-}
-
-func isDatabaseSetupCorrectly(ctx context.Context, p *pooledConnections) (bool, error) {
-	pool := p.readPool
+func isDatabaseSetupCorrectly(ctx context.Context, p *hex.PooledConnections) (bool, error) {
 
 	// 1. Check for table existence
 	tables := []string{"users", "games", "moves"}
 	for _, table := range tables {
 		var tablename string
-		err := pool.QueryRow(ctx, "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename = $1;", table).Scan(&tablename)
+		err := p.ReadPool.QueryRow(ctx, "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename = $1;", table).Scan(&tablename)
 		if err != nil {
 			if err == pgx.ErrNoRows {
 				return false, fmt.Errorf("table %s does not exist", table)
@@ -320,7 +296,7 @@ func isDatabaseSetupCorrectly(ctx context.Context, p *pooledConnections) (bool, 
 	roles := []string{"app_read", "app_write", "app_auth"}
 	for _, role := range roles {
 		var rolname string
-		err := pool.QueryRow(ctx, "SELECT rolname FROM pg_roles WHERE rolname = $1;", role).Scan(&rolname)
+		err := p.ReadPool.QueryRow(ctx, "SELECT rolname FROM pg_roles WHERE rolname = $1;", role).Scan(&rolname)
 		if err != nil {
 			if err == pgx.ErrNoRows {
 				return false, fmt.Errorf("role %s does not exist: see pgx.ErrNoRows: %v", role, err)
@@ -330,27 +306,34 @@ func isDatabaseSetupCorrectly(ctx context.Context, p *pooledConnections) (bool, 
 	}
 
 	// ping connections
-	errRead := PingPooledConnections(ctx, p.readPool)
-	errWrite := PingPooledConnections(ctx, p.writePool)
-	if errRead != nil || errWrite != nil {
-		panic(errors.Join(errRead, errWrite))
+	errPool := PingPooledConnections(ctx, p)
+	if errPool != nil {
+		panic(fmt.Errorf("Unable to ping connection pool: %v\n", errPool))
 	}
 
-	// 4. Insert and retrieve dummy data
-	// make a dummy game entry
-	userID := "dummy-uuid-string"
-	ct, err := pool.Exec(context.Background(), "AddNewGame", userID, userID)
+	// 4. Insert and retrieve dummy data, then delete
+	// make a dummy game entry using AddNew Game prepared statement
+	userID := uuid.Must(uuid.NewRandom()).String()
+	var gameID uuid.UUID
+
+	tx, err := p.WritePool.Begin(ctx)
 	if err != nil {
-		panic(fmt.Errorf("Failed to execute prepared statement: %v\n", err))
+		return false, fmt.Errorf("failed to begin transaction: %w", err)
 	}
+	defer tx.Rollback(ctx) // This will rollback if tx.Commit() isn't called
 
-	ct, err = pool.Exec(ctx, "INSERT INTO users(user_id, username, password_hash) VALUES($1, 'dummyuser', 'dummypassword') ON CONFLICT DO NOTHING;", userID)
+	_, err = tx.Exec(ctx, "Add_new_user", userID, "password")
 	if err != nil {
 		return false, fmt.Errorf("failed to insert dummy data into users: %w", err)
 	}
+	_, err = tx.Exec(ctx, "Add_new_ugae", userID, "password")
+	if err != nil {
+		panic(fmt.Errorf("Failed to execute prepared statement: %v\n", err))
+	}
+	// create a dummy user entry using AddNewUser prepared statement
 
 	var retrievedID string
-	err = pool.QueryRow(ctx, "SELECT user_id FROM users WHERE username = 'dummyuser';").Scan(&retrievedID)
+	err = p.ReadPool.QueryRow(ctx, "SELECT user_id FROM users WHERE username = 'dummyuser';").Scan(&retrievedID)
 	if err != nil {
 		return false, fmt.Errorf("failed to retrieve dummy data from users: %w", err)
 	}
@@ -358,8 +341,40 @@ func isDatabaseSetupCorrectly(ctx context.Context, p *pooledConnections) (bool, 
 		return false, errors.New("retrieved dummy data does not match inserted data")
 	}
 
-	return true, nil
+	// Delete the entries you made to preserve the table integrity and also confirm that batch work fine
+	// Start a new batch
+	batch := &pgx.Batch{}
 
+	// Queue up your commands
+	batch.Queue("DELETE FROM users WHERE user_id = $1", userID)
+	batch.Queue("DeleteGame", gameID)
+
+	// Send the batch to the server
+	br := p.WritePool.SendBatch(ctx, batch)
+
+	// Close the batch operation pool after processing
+	defer br.Close()
+
+	// Check results for the first command
+	if _, err := br.Exec(); err != nil {
+		return false, fmt.Errorf("failed to delete user data from users: %w", err)
+	}
+
+	// Check results for the second command
+	if _, err := br.Exec(); err != nil {
+		return false, fmt.Errorf("failed to delete game data: %w", err)
+	}
+
+	// If everything went fine
+	return true, nil
+	// Return true or any other result indicating success
+
+}
+
+func NEW_UUID() (string, error) {
+	newUUID := uuid.Must(uuid.NewRandom())
+
+	return newUUID.String(), nil
 }
 
 // uses a transaction to delete from both tables all at once or not at all/
@@ -407,27 +422,50 @@ func InitiateNewGame(playerA, playerB uuid.UUID, writePool *pgxpool.Pool) (uuid.
 }
 
 // AddMoveToMemory() adds a move to the moves table
-func AddMoveToMemory(move Move, pool *pgxpool.Pool) error {
+func AddMoveToMemory(move hex.Move, pool *pgxpool.Pool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err := pool.QueryRow(ctx, "Add_New_Move", move.GameID, move.PlayerID, move.MoveDescription)
+	sql := "INSERT INTO moves(gameID, playerID, move_info) VALUES($1, $2, $3)"
+	_, err := pool.Exec(ctx, sql, move.GameID, move.PlayerID, move.MoveDescription)
 
 	if err != nil {
 		time.Sleep(retryDelay)
-		err := pool.QueryRow(ctx, "Add_New_Move", move.GameID, move.PlayerID, move.MoveDescription)
+		_, err = pool.Exec(ctx, sql, move.GameID, move.PlayerID, move.MoveDescription)
 
 		if err != nil {
 			panic(fmt.Errorf("Unable to add move to moves table: %v\n", err))
 		}
 	}
 
-	return err
+	return nil
 }
 
-func FetchLatestThreeMovesInGame(gameID uuid.UUID, readPool *pgxpool.Pool) ([]Move, error) {
+// this is a wrapper function for the exported Fetch commands fro the postgresQL database
+func FetchSomeMoveList(readPool *pgxpool.Pool, game hex.Game, whatToFetch string) ([]hex.Move, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+
+	switch whatToFetch {
+	case "entireGame":
+		return FetchLatestThreeMovesInGame(ctx, game.GameID, readPool)
+
+	case "playerA":
+		return FetchParticularPlayersMoves(ctx, game.PlayerAID, readPool)
+
+	case "playerB":
+		return FetchParticularPlayersMoves(ctx, game.PlayerBID, readPool)
+
+	case "latestThree":
+		return FetchLatestThreeMovesInGame(ctx, game.GameID, readPool)
+
+	default:
+		err := fmt.Errorf("invalid input to FetchSomeMoveList(): %v\n", whatToFetch)
+		return nil, err
+	}
+}
+
+func FetchLatestThreeMovesInGame(ctx context.Context, gameID uuid.UUID, readPool *pgxpool.Pool) ([]hex.Move, error) {
 
 	rows, err := readPool.Query(ctx, "Fetch3recentMoves", gameID)
 	if err != nil {
@@ -439,10 +477,10 @@ func FetchLatestThreeMovesInGame(gameID uuid.UUID, readPool *pgxpool.Pool) ([]Mo
 	}
 	defer rows.Close()
 
-	var latestMoves []Move
+	var latestMoves []hex.Move
 	for rows.Next() {
-		var move Move
-		err := rows.Scan(&move.PlayerGameCode, &move.MoveCounter, &move.MoveDescription, &move.FormattedMoveTime)
+		var move hex.Move
+		err := rows.Scan(&move.PlayerGameCode, &move.MoveCounter, &move.MoveDescription, &move.MoveTime)
 		if err != nil {
 			return nil, err
 		}
@@ -452,9 +490,7 @@ func FetchLatestThreeMovesInGame(gameID uuid.UUID, readPool *pgxpool.Pool) ([]Mo
 	return latestMoves, nil
 }
 
-func FetchParticularPlayersMoves(playerGameCode uuid.UUID, readPool *pgxpool.Pool) ([]Move, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+func FetchParticularPlayersMoves(ctx context.Context, playerGameCode uuid.UUID, readPool *pgxpool.Pool) ([]hex.Move, error) {
 
 	rows, err := readPool.Query(ctx, "FetchAPlayersMoves", playerGameCode)
 	if err != nil {
@@ -466,10 +502,10 @@ func FetchParticularPlayersMoves(playerGameCode uuid.UUID, readPool *pgxpool.Poo
 	}
 	defer rows.Close()
 
-	var moves []Move
+	var moves []hex.Move
 	for rows.Next() {
-		var move Move
-		err := rows.Scan(&move.MoveID, &move.GameID, &move.PlayerID, &move.PlayerCode, &move.PlayerGameCode, &move.Description, &move.MoveTime)
+		var move hex.Move
+		err := rows.Scan(&move.MoveID, &move.GameID, &move.PlayerID, &move.PlayerCode, &move.PlayerGameCode, &move.MoveDescription, &move.MoveTime)
 		if err != nil {
 			return nil, err
 		}
@@ -479,9 +515,7 @@ func FetchParticularPlayersMoves(playerGameCode uuid.UUID, readPool *pgxpool.Poo
 	return moves, nil
 }
 
-func FetchAllMovesForGameID(gameID uuid.UUID, readPool *pgxpool.Pool) ([]Move, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+func FetchAllMovesForGameID(ctx context.Context, gameID uuid.UUID, readPool *pgxpool.Pool) ([]hex.Move, error) {
 
 	rows, err := readPool.Query(ctx, "fetch_all_moves_for_game", gameID)
 	if err != nil {
@@ -493,10 +527,10 @@ func FetchAllMovesForGameID(gameID uuid.UUID, readPool *pgxpool.Pool) ([]Move, e
 	}
 	defer rows.Close()
 
-	var moves []Move
+	var moves []hex.Move
 	for rows.Next() {
-		var move Move // Move is a struct representing a move, define it accordingly.
-		err := rows.Scan(&move.MoveID, &move.GameID, &move.PlayerID, &move.PlayerCode, &move.PlayerGameCode, &move.Description, &move.MoveTime)
+		var move hex.Move // Move is a struct representing a move, define it accordingly.
+		err := rows.Scan(&move.MoveID, &move.GameID, &move.PlayerID, &move.PlayerCode, &move.PlayerGameCode, &move.MoveDescription, &move.MoveTime)
 		if err != nil {
 			return nil, err
 		}
@@ -506,7 +540,7 @@ func FetchAllMovesForGameID(gameID uuid.UUID, readPool *pgxpool.Pool) ([]Move, e
 	return moves, nil
 }
 
-func FetchOngoingGames(gameID, playerID *uuid.UUID, readPool *pgxpool.Pool) ([]Game, error) {
+func FetchOngoingGames(gameID, playerID *uuid.UUID, readPool *pgxpool.Pool) ([]hex.Game, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -520,10 +554,10 @@ func FetchOngoingGames(gameID, playerID *uuid.UUID, readPool *pgxpool.Pool) ([]G
 	}
 	defer rows.Close()
 
-	var games []Game
+	var games []hex.Game
 	for rows.Next() {
-		var game Game // Game is a struct representing a game, define it accordingly.
-		err := rows.Scan(&game.GameID, &game.PlayerAID, &game.PlayerBID, &game.Outcome, &game.StartTime)
+		var game hex.Game // Game is a struct representing a game, define it accordingly.
+		err := rows.Scan(&game.GameID, &game.PlayerAID, &game.PlayerBID, &game.Outcome, &game.GameStartTime)
 		if err != nil {
 			return nil, err
 		}
@@ -569,3 +603,5 @@ func AddNewUser(username, passwordHash string, pool *pgxpool.Pool) (uuid.UUID, e
 
 	return newUserID, err
 }
+
+var _Persister = &MemoryPersister{}

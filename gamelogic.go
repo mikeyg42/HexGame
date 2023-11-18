@@ -4,14 +4,12 @@ import (
 	"context"
 	"fmt"
 
-	hex "github.com/mikeyg42/HexGame/models"
+	hex "github.com/mikeyg42/HexGame/structures"
 )
 
-// copied this from gamestate.go --- need to make these dynamically linked!
-const SideLenGameboard = 15
-
-// used by persistence layer and gamestate
+// used by persistence layer and gamestate. newVert is  abolute coordinates, not relative to the identityo f the player
 func IncorporateNewVert(ctx context.Context, moveList []hex.Vertex, adjGraph [][]int, newVert hex.Vertex) ([][]int, []hex.Vertex) {
+
 	// Update Moves
 	updatedMoveList := append(moveList, newVert)
 	moveCount := len(updatedMoveList)
@@ -32,14 +30,12 @@ func IncorporateNewVert(ctx context.Context, moveList []hex.Vertex, adjGraph [][
 
 	// Find adjacent vertices by comparing the list of 6 adjacent vertex list to game state move list, if one of the new points neighbors is in the move list, then there is an edge between the new point and that existing point
 	sixAdjacentVertices := getAdjacentVertices(newVert)
-	for i := 0; i < moveCount; i++ {
-		k := i + 2
+	for k := 2; k < moveCount+2; k++ {
 		for _, potentialEdgePair := range sixAdjacentVertices {
 			if containsVert(moveList, potentialEdgePair) {
 				// Edge found between new vertex and an existing vertex
 				newAdjacencyGraph[k][moveCount] = 1
 				newAdjacencyGraph[moveCount][k] = 1
-				break // is this right?
 			}
 		}
 	}
@@ -100,6 +96,7 @@ func containsVert(vertices []hex.Vertex, target hex.Vertex) bool {
 	return false
 }
 
+//
 func removeRows(s [][]int, indices []int) [][]int {
 	result := make([][]int, 0)
 	for i, row := range s {
@@ -129,6 +126,7 @@ func RemoveVertices(s []hex.Vertex, indices []int) []hex.Vertex {
 	return result
 }
 
+// checks if a matrix is symmetric, an essential quality of an adjacency matrix
 func isSymmetric(matrix [][]int) bool {
 	rows := len(matrix)
 	if rows == 0 {
@@ -155,6 +153,7 @@ func transpose(slice [][]int) [][]int {
 	if numRows == 0 {
 		return [][]int{}
 	}
+
 	numCols := len(slice[0])
 	result := make([][]int, numCols)
 	for i := range result {
@@ -168,15 +167,18 @@ func transpose(slice [][]int) [][]int {
 	return result
 }
 
+// converts the x coordinate from a letter to an int as in A->1->0 (zero indexed!), B->->1, ect.
 func convertToInt(xCoord string) (int, error) {
 	// x coordinate will always be a letter between A and O, the 15th letter, and bc the board is 15x15, the max value for xCoord is 15
 	if len(xCoord) != 1 {
-		return -1, fmt.Errorf("invalid input length for xCoord")
+		return -1, fmt.Errorf("invalid input length for xCoord, should be only one letter, not: %v", xCoord)
 	}
+
 	// coordinates on our game board are zero-indexed! So we want a--> 0, b--> 1, etc. until o --> 14
 	return int(xCoord[0]) - int('A'), nil
 }
 
+//takes in the xcoordinate as a string (a,b,c,d...)+ y coord (0,1,2... ) and spits out a vertex (x,y) pair
 func ConvertToTypeVertex(xCoord string, yCoord int) (hex.Vertex, error) {
 	x, err := convertToInt(xCoord)
 	if err != nil {
@@ -186,4 +188,5 @@ func ConvertToTypeVertex(xCoord string, yCoord int) (hex.Vertex, error) {
 	return hex.Vertex{
 		X: x,
 		Y: yCoord}, nil
-}
+	}
+

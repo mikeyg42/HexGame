@@ -4,12 +4,13 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	pgxpool "github.com/jackc/pgx/v5/pgxpool"
 )
 
 const Delimiter = "#"
 
 type EvtData struct {
-	EventData      string    `json:"event_type"`
+	EventData      string    `json:"event_data"`
 	EventType      string    `json:"event_type"`
 	Topic          Topic     `json:"-"`
 	GameID         uuid.UUID `json:"game_id"`
@@ -70,7 +71,7 @@ type MemoryInterface interface {
 	AddMove_persist()
 	CompleteGame_persist() // double check you did not miss any moves and then update the game status
 	NewGame_persist()
-	FetchMoveList() // can be used to fetch the entire game history of BOTH or JUST 1 player
+	FetchSomeMoveList(pool *pgxpool.Pool, gameID uuid.UUID) ([]Move, error) // can be used to fetch the entire game history of BOTH or JUST 1 player
 	DeleteGame_persist()
 }
 
@@ -80,4 +81,40 @@ type PlayerController interface {
 	RequestGamestate()
 	Ack()
 	AnnounceConnect() // this needs to happen when players are able to start game. and also after a disconnection
+}
+
+// database structs
+type Vertex struct {
+	X int
+	Y int
+}
+
+type PooledConnections struct {
+	PoolConfig       *pgxpool.Config
+	MaxReadPoolSize  int
+	MaxWritePoolSize int
+	ReadTimeout      time.Duration
+	WriteTimeout     time.Duration
+	ReadPool         *pgxpool.Pool
+	WritePool        *pgxpool.Pool
+}
+
+type Game struct {
+	GameID        uuid.UUID `db:"game_id"`
+	PlayerAID     uuid.UUID `db:"playerA_id"`
+	PlayerBID     uuid.UUID `db:"playerB_id"`
+	Outcome       string    `db:"outcome"`
+	GameStartTime time.Time `db:"game_start_time"`
+}
+
+type Move struct {
+	MoveID          int       `db:"move_id"`
+	GameID          uuid.UUID `db:"game_id"`
+	PlayerID        uuid.UUID `db:"player_id"`
+	PlayerCode      string    `db:"player_code"`
+	PlayerGameCode  string    `db:"player_game_code"`
+	MoveDescription string    `db:"move_description"`
+	MoveTime        time.Time `db:"move_time"`
+	// Assuming from the latest three moves function
+	MoveCounter int `db:"move_counter"`
 }

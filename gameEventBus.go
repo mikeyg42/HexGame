@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync"
 
-	hex "github.com/mikeyg42/HexGame/models"
+	hex "github.com/mikeyg42/HexGame/structures"
 )
 
 type GameEventBus struct {

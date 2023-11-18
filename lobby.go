@@ -1,7 +1,7 @@
 package main
 
 import (
-	hex "github.com/mikeyg42/HexGame/models"
+	hex "github.com/mikeyg42/HexGame/structures"
 	"context"
 	"encoding/json"
 	"time"

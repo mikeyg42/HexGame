@@ -21,7 +21,7 @@ import (
 	websocket "nhooyr.io/websocket"
 	wsjson "nhooyr.io/websocket/wsjson"
 
-	hex "github.com/mikeyg42/HexGame/models"
+	hex "github.com/mikeyg42/HexGame/structures"
 )
 
 const topicCodeLength = 5 // fixed legth of the topic code
