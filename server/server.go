@@ -4,8 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -22,6 +21,7 @@ import (
 	wsjson "nhooyr.io/websocket/wsjson"
 
 	hex "github.com/mikeyg42/HexGame/structures"
+	evt "github.com/mikeyg42/HexGame/structures/lobby"
 )
 
 const topicCodeLength = 5 // fixed legth of the topic code
@@ -50,15 +50,16 @@ func runWebsocketServer(tcpAddr string) error {
 	server := &http.Server{
 		Handler: newChatServer(),
 		BaseContext: func(_ net.Listener) context.Context {
-			return mainCtx // each request's context r.Context() to be derived from our main context.
+			return mainCtx 
 		},
 		ReadTimeout:  time.Second * 10,
 		WriteTimeout: time.Second * 10,
 		// set the max read and write too??
 	}
+	s := &myServer{server: server}
 
 	// make error channel to consolidate for errors from the server
-	egroup, eGroupCtx := errgroup.WithContext(mainCtx)
+	egroup, eGroupCtx := errgroup.WithContext(s.server.BaseContext(listener))
 
 	// Goroutine for serving HTTP
 	egroup.Go(func() error {
@@ -66,14 +67,19 @@ func runWebsocketServer(tcpAddr string) error {
 	})
 
 	// Goroutine to handle shutdown signals
-	s := &myServer{server: server}
-	egroup.Go(s.ShutdownServer(eGroupCtx, mainCtx))
+	egroup.Go(func() error {
+		// Wait for all goroutines in the errgroup
+		if err := egroup.Wait(); err != nil && err != http.ErrServerClosed {
+			defer s.server.Shutdown(eGroupCtx)
 
-	// Wait for all goroutines in the errgroup
-	if err := egroup.Wait(); err != nil && err != http.ErrServerClosed {
-		log.Printf("failed to serve: %v", err)
-		return err
-	}
+			log.Printf("failed to serve: %v", err)
+			
+			return err
+		}
+		return nil
+	})
+
+	s.server.RegisterOnShutdown()
 
 	return nil
 }
@@ -106,14 +112,14 @@ func (s *myServer) ShutdownServer(eGroupCtx, mainCtx context.Context) error {
 		select {
 		case <-eGroupCtx.Done():
 			return eGroupCtx.Err()
+
 		case <-mainCtx.Done():
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+			shutdownCtx, cancel := context.WithTimeout(mainCtx, time.Second*10)
 			defer cancel()
 
 			// Trigger graceful server shutdown - give it 10 seconds to try to finish
-			if err := s.server.Shutdown(shutdownCtx); err != nil {
-				return err
-			}
+			s.server.Shutdown(shutdownCtx)
+			
 			log.Println("server gracefully shut down")
 			return nil
 		}
@@ -177,7 +183,7 @@ func (lobbyServ *lobbyServer) publishHandler(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	body := http.MaxBytesReader(w, r.Body, 8192)
-	evt, err := ioutil.ReadAll(body)
+	evt, err := io.ReadAll(body)
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusRequestEntityTooLarge), http.StatusRequestEntityTooLarge)
 		return
@@ -190,8 +196,7 @@ func (lobbyServ *lobbyServer) publishHandler(w http.ResponseWriter, r *http.Requ
 
 // creates a subscriber
 func (lobbyServ *lobbyServer) subscribe(ctx context.Context, c *websocket.Conn) error {
-	ctx = websocket.c.CloseRead(ctx)
-	// this fcn closeRead keeps reading from the connection for a while to process pings and stuff
+	ctx = c.CloseRead(ctx)
 
 	s := &subscriber{
 		evts: make(chan []byte, lobbyServ.subscriberEventMsgBuffer),
@@ -199,14 +204,14 @@ func (lobbyServ *lobbyServer) subscribe(ctx context.Context, c *websocket.Conn) 
 			c.Close(websocket.StatusPolicyViolation, "connection too slow to keep up with eventMsgs")
 		},
 	}
-	lobbyServ.AddSubscriber(s) // adds the subscriber to the map
+
+	lobbyServ.AddSubscriber(s)
 	defer lobbyServ.DeleteSubscriber(s)
 
 	for {
 		select {
 		case evt := <-s.evts:
-			err := writeTimeout(ctx, time.Second*5, c, evt)
-			if err != nil {
+			if err := writeTimeout(ctx, time.Second*5, c, evt); err != nil {
 				return err
 			}
 		case <-ctx.Done():
@@ -249,7 +254,7 @@ func writeTimeout(ctx context.Context, timeout time.Duration, c *websocket.Conn,
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	return c.Write(ctx, websocket.EventMsgText, msg)
+	return c.Write(ctx, websocket.EventMsgs, msg)
 }
 
 func ReadFromWebsocket(ctx context.Context, c *websocket.Conn) (string, []byte, error) {
@@ -261,7 +266,7 @@ func ReadFromWebsocket(ctx context.Context, c *websocket.Conn) (string, []byte, 
 
 	// Ensure you've read enough bytes for the topic.
 	if len(msg) < topicCodeLength+2 {
-		return "", nil, errors.New("message too short to contain topic")
+		return "", nil, errors.New("message too short to contain topic  abort before reading payload")
 	}
 
 	// Extract topic and return
@@ -274,14 +279,16 @@ func WriteToWebsocket(ctx context.Context, c *websocket.Conn, msg []byte) error 
 	if yn_json {
 		err := wsjson.Write(ctx, c, msg)
 		return err
+	} else {
+		return errors.New("message is not valid json")
 	}
-
-	return fmt.Errorf("message is not valid json")
 }
 
-func handleWebsocketConnection(ctx context.Context, c *websocket.Conn, geb *hex.GameEventBus) {
+func handleWebsocketConnection(ctx context.Context, c *websocket.Conn, geb *evt.GameEventBus) {
+
 	for {
-		msg, _, err := ReadFromWebsocket(ctx, c)
+		var msg []byte
+		_, msg, err := ReadFromWebsocket(ctx, c)
 		if err != nil {
 			// Handle read error.
 			return
@@ -292,7 +299,6 @@ func handleWebsocketConnection(ctx context.Context, c *websocket.Conn, geb *hex.
 		msgWithTopic := prependTopicToPayload(topic, msg)
 
 		geb.DispatchMessage(string(msgWithTopic))
-
 	}
 }
 

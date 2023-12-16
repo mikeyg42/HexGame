@@ -12,7 +12,7 @@ import (
 	"github.com/google/uuid"
 	pgx "github.com/jackc/pgx/v5"
 	pgxpool "github.com/jackc/pgx/v5/pgxpool"
-	hex "github.com/mikeyg42/HexGame/HexGame/structures"
+	hex "github.com/mikeyg42/HexGame/structures"
 
 	SQL_namedPreparedStmts "github.com/mikeyg42/HexGame/sqlconstants"
 	pgxUUID "github.com/vgarvardt/pgx-google-uuid/v5"

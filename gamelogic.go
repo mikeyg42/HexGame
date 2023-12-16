@@ -3,12 +3,41 @@ package main
 import (
 	"context"
 	"fmt"
+	"math"
 
 	hex "github.com/mikeyg42/HexGame/structures"
+	zap "go.uber.org/zap"
 )
 
-// used by persistence layer and gamestate. newVert is  abolute coordinates, not relative to the identityo f the player
+type GameInfo struct {
+	WorkerID   string
+	EvaluateProposedMoveLegality()
+	EvaluateWinCondition()
+	BroadcastGameEnd()
+	BroadcastConnectionFail()
+	DemandPlayersAck()
+}
+
+// game board is going to be 15x15, with 1,1 being the bottom left corner.
+// rows 0 and 16 are going to be the hidden points for both players
+// the x axis is the horizontal axis, and the y axis goes up and to the right. the z axis goes up and to the left
+// z = -x - y
+// hex.Vertex{X: 1, Y: 1} is the notation of vertices here
+// move format: will be: [turn#][[playercode]].[X].[Y].[note]. note is not optional, fill with z if no note.
+// each turn has two parts, a for player A and b for player B
+// the opening 2 moves are part of turn #0 and are notated as 0a.X.Y.kept or 0a.X.Y.taken and then either 0b.X.Y.swap or 0b.F.H.noswap
+// then the first move of turn 1 is 1a.X.Y.z and so on....
+// when game is over, the last entry will be the 97[player code].99.99.[win condition]
+// coordinates will all be logged as absolute coordinates. The validity of each  move will be done in absolute coordinates too.
+// BUT, for player B, the win condition eval requires 1st swapping all the X's and Y's of both players so that the graph-based algorithm can be run always evaluating LEFT to RIGHT
+// ^^ remember that ONLY win condition get non-absolute coordinates, all other moves are absolute coordinates
+
+// imagine the 2x2 board with the top left and bottom right corners filled in by the same player, thenb
+
+// used by memoryTool and refereeTool.
+// newVert is in abolute coordinates, not relative to the identity of the player
 func IncorporateNewVert(ctx context.Context, moveList []hex.Vertex, adjGraph [][]int, newVert hex.Vertex) ([][]int, []hex.Vertex) {
+	// it is assumwed that the newVert is a valid move, so we don't need to check for that here
 
 	// Update Moves
 	updatedMoveList := append(moveList, newVert)
@@ -41,7 +70,7 @@ func IncorporateNewVert(ctx context.Context, moveList []hex.Vertex, adjGraph [][
 	}
 
 	// Check if new vertex is in the first column or last column
-	if newVert.X == 0 {
+	if newVert.X == 1 {
 		// Edge found between new vertex and the leftmost hidden point
 		newAdjacencyGraph[0][sizeNewAdj-1] = 1
 		newAdjacencyGraph[sizeNewAdj-1][0] = 1
@@ -96,7 +125,6 @@ func containsVert(vertices []hex.Vertex, target hex.Vertex) bool {
 	return false
 }
 
-//
 func removeRows(s [][]int, indices []int) [][]int {
 	result := make([][]int, 0)
 	for i, row := range s {
@@ -178,7 +206,7 @@ func convertToInt(xCoord string) (int, error) {
 	return int(xCoord[0]) - int('A'), nil
 }
 
-//takes in the xcoordinate as a string (a,b,c,d...)+ y coord (0,1,2... ) and spits out a vertex (x,y) pair
+// takes in the xcoordinate as a string (a,b,c,d...)+ y coord (0,1,2... ) and spits out a vertex (x,y) pair
 func ConvertToTypeVertex(xCoord string, yCoord int) (hex.Vertex, error) {
 	x, err := convertToInt(xCoord)
 	if err != nil {
@@ -188,5 +216,110 @@ func ConvertToTypeVertex(xCoord string, yCoord int) (hex.Vertex, error) {
 	return hex.Vertex{
 		X: x,
 		Y: yCoord}, nil
+}
+
+// ..... CHECKING FOR WIN CONDITION
+
+// first thing we need to do is to flip the axes of the gameboard for player B, so that the win condition algorithm can be run in the same way for both players
+func flipPlayerB(moveList []hex.Vertex) []hex.Vertex {
+	flippedMoveList := make([]hex.Vertex, len(moveList))
+	for j, move := range moveList {
+		flippedMoveList[j] = hex.Vertex{X: move.Y, Y: move.X}
+	}
+	return flippedMoveList
+}
+
+// moveList is the list of moves made by BOTH player, whereas the adjG is the adjacency matrix of the gameboard for ONE player
+// new movelist INCLUDES the move that was just made by the player
+func EvalWinCondition(playerID string, adjG [][]int, moveList []hex.Vertex) bool {
+
+	// ascertain the # of moves made
+	totalNumMoves := len(moveList)
+
+	// eval if player A or player B -- flip all tile coords for player B only
+	if totalNumMoves%2 == 0 {
+		moveList = flipPlayerB(moveList)
 	}
 
+	numMoves := int(math.Floor(float64(totalNumMoves) / 2)) // refers to the moves of just this player, not both summed
+	// These vars refer to cols and rows of the adjacency matrix
+	numRows := numMoves + 2
+	numCols := numRows
+
+	// check coinditions where no win is possible
+	// Condition 1: Check if enough tiles to traverse the whole game board
+	// Condition 2: Check if at least 1 tile is placed in each column
+	if checkCondition1(moveList) || checkCondition2(moveList) {
+		return false
+	}
+
+	// Condition 3: Check if there is a path from the leftmost hidden point to the rightmost hidden point via thinning
+	thinnedAdj := make([][]int, len(adjG))
+	copy(thinnedAdj, adjG)
+
+	thinnedMoveList := make([]hex.Vertex, numMoves)
+	copy(thinnedMoveList, moveList)
+
+	// thinning loop
+	for {
+		// Find degree 0 and 1 nodes (excluding end points)
+		lowDegreeNodes := make([]int, 0)
+		for i := 2; i < numRows; i++ {
+			degree := 0
+			for j := 0; j < numCols; j++ {
+				degree += thinnedAdj[i][j]
+			}
+			if degree == 0 || degree == 1 {
+				lowDegreeNodes = append(lowDegreeNodes, i)
+			}
+		}
+
+		// THE ONLY WAY TO WIN: after exhausting thinning, if you still have have all notes w/ degree 2 (except the hidden ones...)
+		// If there are no degree =0 or =1 nodes, break the loop
+		if len(lowDegreeNodes) == 0 {
+			return true
+		}
+
+		// else, thin again!
+		thinnedAdj, err := ThinAdjacencyMat(thinnedAdj, lowDegreeNodes)
+		if err != nil {
+			panic(fmt.Errorf("error thinning matrix eval win cond.: %v", err))
+		}
+
+		// Update adjacency matrix and dimensions
+		numRows = len(thinnedAdj)
+		numCols = numRows
+
+		// Update move list
+		thinnedMoveList = RemoveVertices(thinnedMoveList, lowDegreeNodes)
+
+		// Check if condition 1 is still met
+		if len(thinnedMoveList) < SideLenGameboard {
+			return false
+		}
+
+		// check condition 2: Iterate across the columns of gameboard, and any cols unrepresented in the columnSet map set to false
+		if checkCondition1(thinnedMoveList) || checkCondition2(thinnedMoveList) {
+			return false
+		}
+		// Iff we make it to here then we have not thinned enough, and so we proceed with another iteration of thinning
+	}
+}
+
+func checkCondition1(moveList []hex.Vertex) bool {
+	return len(moveList) < SideLenGameboard
+}
+
+func checkCondition2(moveList []hex.Vertex) bool {
+
+	columnSet := make(map[int]bool)
+	for _, move := range moveList {
+		columnSet[move.X] = true
+	}
+	for k := 0; k < SideLenGameboard; k++ {
+		if !columnSet[k] {
+			return false
+		}
+	}
+	return true
+}

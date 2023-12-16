@@ -24,12 +24,12 @@ type Topic struct {
 }
 
 type SliceOfSubscribeChans []chan []byte // an array of all the channels that subscribe to a given topic,
-// so that when a message is published to that topic, it can be broadcast to all the subscribers
+// when a message is published to a particular topic, its broadcasted to all the subscribers in this slice
 
 type LobbyEvent struct {
 	Data       [2]string
 	Originator string
-	TimeStamp  time.Time
+	TimeStamp  int64 //  a unix timestamp in nano
 }
 
 type Player struct {
@@ -59,7 +59,6 @@ type Referee interface {
 	BroadcastGameEnd()
 	BroadcastConnectionFail()
 	DemandPlayersAck()
-	SignalTimerNextTurnCanStart()
 }
 
 type CacheManager interface {
@@ -67,7 +66,7 @@ type CacheManager interface {
 	FetchFromCache()
 }
 
-type MemoryInterface interface {
+type MemoryInterface interface { // done
 	AddMove_persist()
 	CompleteGame_persist() // double check you did not miss any moves and then update the game status
 	NewGame_persist()
