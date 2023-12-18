@@ -8,6 +8,7 @@ import (
 )
 
 const Delimiter = "#"
+const SideLenGameboard = 15
 
 type EvtData struct {
 	EventData      string    `json:"event_data"`
