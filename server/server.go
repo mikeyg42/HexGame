@@ -50,7 +50,7 @@ func runWebsocketServer(tcpAddr string) error {
 	server := &http.Server{
 		Handler: newChatServer(),
 		BaseContext: func(_ net.Listener) context.Context {
-			return mainCtx 
+			return mainCtx
 		},
 		ReadTimeout:  time.Second * 10,
 		WriteTimeout: time.Second * 10,
@@ -73,7 +73,7 @@ func runWebsocketServer(tcpAddr string) error {
 			defer s.server.Shutdown(eGroupCtx)
 
 			log.Printf("failed to serve: %v", err)
-			
+
 			return err
 		}
 		return nil
@@ -119,7 +119,7 @@ func (s *myServer) ShutdownServer(eGroupCtx, mainCtx context.Context) error {
 
 			// Trigger graceful server shutdown - give it 10 seconds to try to finish
 			s.server.Shutdown(shutdownCtx)
-			
+
 			log.Println("server gracefully shut down")
 			return nil
 		}

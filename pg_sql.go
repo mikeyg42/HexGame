@@ -27,8 +27,6 @@ const writeTimeout = 2 * time.Second
 const maxRetries = 3
 const retryDelay = 500 * time.Millisecond
 
-
-
 // ----------------------------------//
 func InitializePostgres() {
 	ctx, cancel := context.WithCancel(context.Background())

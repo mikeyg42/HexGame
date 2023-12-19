@@ -10,20 +10,19 @@ import (
 type myKey string
 
 const (
-    CurrentPlayerIDKey myKey = "currentPlayerID"
+	CurrentPlayerIDKey myKey = "currentPlayerID"
 )
-
 
 /*
 type GameInfo struct {
 	WorkerID string
-	
+
 			EvaluateProposedMoveLegality func(context.Context, hex.Vertex) bool
 		 	EvaluateWinCondition()
 			BroadcastGameEnd()
 			BroadcastConnectionFail()
 			DemandPlayersAck()
-	
+
 }
 */
 
@@ -45,8 +44,6 @@ type GameInfo struct {
 // coordinates will all be logged as absolute coordinates. The validity of each  move will be done in absolute coordinates too.
 // BUT, for player B, the win condition eval requires 1st swapping all the X's and Y's of both players so that the graph-based algorithm can be run always evaluating LEFT to RIGHT
 // ^^ remember that ONLY win condition get non-absolute coordinates, all other moves are absolute coordinates
-
-
 
 // used by memoryTool and refereeTool??
 // newVert is in abolute coordinates, not relative to the identity of the player, ie player A and B's moves are in the same coord syst4em and there should be no overlaps
@@ -132,7 +129,7 @@ func ThinAdjacencyMat(adj [][]int, indices []int) ([][]int, error) {
 	thinnedAdj := removeRows(temp, indices)
 
 	// Check for matrix symmetry
-	if isSymmetric(thinnedAdj) {
+	if !isSymmetric(thinnedAdj) {
 		return nil, fmt.Errorf("gamestate breakdown: %v", "Adjacency matrix is Not symmetric post thinning, something is terribly wrong")
 	}
 
@@ -192,24 +189,29 @@ func removeVerts_moveList(s []hex.Vertex, indices []int) []hex.Vertex {
 
 // checks if a matrix is symmetric, an essential quality of an adjacency matrix
 func isSymmetric(matrix [][]int) bool {
-	rows := len(matrix)
-	if rows == 0 {
-		return true
-	}
-	cols := len(matrix[0])
+    rows := len(matrix)
+    if rows == 0 {
+        return true
+    }
+    cols := len(matrix[0])
 
-	for i, row := range matrix {
-		if len(row) != cols {
-			return false
-		}
-		for j := i + 1; j < cols; j++ {
-			if matrix[i][j] != matrix[j][i] {
-				return false
-			}
-		}
-	}
+    // Check if the matrix is square
+    if rows != cols {
+        return false
+    }
 
-	return true
+    for i, row := range matrix {
+        if len(row) != cols {
+            return false
+        }
+        for j := i + 1; j < cols; j++ {
+            if matrix[i][j] != matrix[j][i] {
+                return false
+            }
+        }
+    }
+
+    return true
 }
 
 func transpose(slice [][]int) [][]int {
@@ -251,7 +253,7 @@ func extractPlayerMovesFromAllMoves(ctx context.Context, allMoveList []hex.Verte
 		k = 1
 	}
 
-	movesList := []hex.Vertex {}
+	movesList := []hex.Vertex{}
 	for k < len(allMoveList) {
 		movesList = append(movesList, allMoveList[k])
 		k += 2
@@ -260,7 +262,6 @@ func extractPlayerMovesFromAllMoves(ctx context.Context, allMoveList []hex.Verte
 	return movesList
 }
 
-
 // allMovesList is the list of moves made by BOTH player, whereas the adjG                                                                                                                                                                        r
 func EvalWinCondition(ctx context.Context, adjG [][]int, allMovesList []hex.Vertex) bool {
 
@@ -268,11 +269,11 @@ func EvalWinCondition(ctx context.Context, adjG [][]int, allMovesList []hex.Vert
 	totalNumMoves := len(allMovesList)
 
 	// evaluate if there are enough moves to win, this is tantamount to checking condition #1
-	if totalNumMoves < 2 * hex.SideLenGameboard - 1 {
+	if totalNumMoves < 2*hex.SideLenGameboard-1 {
 		return false // if there are not enough moves to win, then return false
 	}
 
-	// eval if player A or player B -- flip all tile coords for player B only. also k will be the index of the players first move. 
+	// eval if player A or player B -- flip all tile coords for player B only. also k will be the index of the players first move.
 	if ctx.Value(CurrentPlayerIDKey) == "B" {
 		allMovesList = flipPlayerB(allMovesList)
 	}
@@ -427,10 +428,10 @@ func TestWinCondition() bool {
 			return false
 		}
 	}
-	
+
 	p1adj, moveList = IncorporateNewVert(ctxA, moveList, p1adj, p1_newMove)
 	p1fin := EvalWinCondition(ctxA, p1adj, moveList)
-	fmt.Printf("on turn %d, playerA win = %v", k,p1fin)
+	fmt.Printf("on turn %d, playerA win = %v", k, p1fin)
 
 	return p1fin
 }
