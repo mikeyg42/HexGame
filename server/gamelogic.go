@@ -1,4 +1,4 @@
-package gamelogic
+package server
 
 import (
 	"context"
@@ -472,7 +472,7 @@ func TestWinCondition() bool {
 }
 
 // checkMoveValidity checks the validity of the candidate move and returns an error if invalid.
-func checkMoveValidity(candidateMove string, allMoveList []Vertex) (bool, hex.Vertex, error) {
+func checkMoveValidity(candidateMove string, allMoveList []hex.Vertex) (bool, hex.Vertex, error) {
 	emptyVertex := hex.Vertex{X: -1, Y: -1}
 	// Split the move into parts
 	parts := strings.Split(candidateMove, ".")
@@ -567,7 +567,7 @@ func handleNewMoveEvent(move Move) error {
 
 	// we need to here try to pull the move from the cache. and if that fails then we move to the database
 	// gives us allMoveList at least.
-	allMoveList, adj := RetrieveFromCache(ctx, move.gameID, move.currPlayerID)
+	allMoveList, adj := RetrieveFromCache(ctx, move.gameID)
 
 	tf, newVert, err := checkMoveValidity(move.proposedMove, allMoveList)
 	if err != nil || !tf {
@@ -584,8 +584,8 @@ func handleNewMoveEvent(move Move) error {
 
 	if winConMet {
 		// broadcast game end
-		// declare another move with move 999 and condition as : 
-			// 'ongoing', 'forfeit', 'true_win', 'timeout', 'crash', 'veryshort'
+		// declare another move with move 999 and condition as :
+		// 'ongoing', 'forfeit', 'true_win', 'timeout', 'crash', 'veryshort'
 	} else {
 		// write to cache
 	}
