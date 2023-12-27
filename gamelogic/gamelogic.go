@@ -2,8 +2,13 @@ package gamelogic
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"math"
+	"strconv"
+	"strings"
 
+	"github.com/google/uuid"
 	hex "github.com/mikeyg42/HexGame/structures"
 )
 
@@ -39,7 +44,7 @@ type GameInfo struct {
 // first turn = turn 0
 // the opening 2 moves are part of turn #0 and are notated as 0a.X.Y.kept or 0a.X.Y.taken and then either 0b.X.Y.swap or 0b.F.H.noswap
 // then the first move of turn 1 is 1a.X.Y.z and so on....
-// when game is over, the last entry will be the 99[player code].99.99.[win condition]
+// when game is over, the last entry will be the 999[player code].99.99.[win condition]
 
 // coordinates will all be logged as absolute coordinates. The validity of each  move will be done in absolute coordinates too.
 // BUT, for player B, the win condition eval requires 1st swapping all the X's and Y's of both players so that the graph-based algorithm can be run always evaluating LEFT to RIGHT
@@ -112,17 +117,6 @@ func IncorporateNewVert(ctx context.Context, allMoveList []hex.Vertex, adjGraph 
 	return newAdjacencyGraph, updatedMoveList
 }
 
-func getAdjacentVertices(vertex hex.Vertex) []hex.Vertex {
-	return []hex.Vertex{
-		{X: vertex.X - 1, Y: vertex.Y + 1},
-		{X: vertex.X - 1, Y: vertex.Y},
-		{X: vertex.X, Y: vertex.Y - 1},
-		{X: vertex.X, Y: vertex.Y + 1},
-		{X: vertex.X + 1, Y: vertex.Y},
-		{X: vertex.X + 1, Y: vertex.Y - 1},
-	}
-}
-
 func ThinAdjacencyMat(adj [][]int, indices []int) ([][]int, error) {
 	temp := removeRows(adj, indices)
 	temp = transpose(temp)
@@ -189,29 +183,29 @@ func removeVerts_moveList(s []hex.Vertex, indices []int) []hex.Vertex {
 
 // checks if a matrix is symmetric, an essential quality of an adjacency matrix
 func isSymmetric(matrix [][]int) bool {
-    rows := len(matrix)
-    if rows == 0 {
-        return true
-    }
-    cols := len(matrix[0])
+	rows := len(matrix)
+	if rows == 0 {
+		return true
+	}
+	cols := len(matrix[0])
 
-    // Check if the matrix is square
-    if rows != cols {
-        return false
-    }
+	// Check if the matrix is square
+	if rows != cols {
+		return false
+	}
 
-    for i, row := range matrix {
-        if len(row) != cols {
-            return false
-        }
-        for j := i + 1; j < cols; j++ {
-            if matrix[i][j] != matrix[j][i] {
-                return false
-            }
-        }
-    }
+	for i, row := range matrix {
+		if len(row) != cols {
+			return false
+		}
+		for j := i + 1; j < cols; j++ {
+			if matrix[i][j] != matrix[j][i] {
+				return false
+			}
+		}
+	}
 
-    return true
+	return true
 }
 
 func transpose(slice [][]int) [][]int {
@@ -261,6 +255,47 @@ func extractPlayerMovesFromAllMoves(ctx context.Context, allMoveList []hex.Verte
 
 	return movesList
 }
+
+func getAdjacentVertices(vertex hex.Vertex) []hex.Vertex {
+	return []hex.Vertex{
+		{X: vertex.X - 1, Y: vertex.Y + 1},
+		{X: vertex.X - 1, Y: vertex.Y},
+		{X: vertex.X, Y: vertex.Y - 1},
+		{X: vertex.X, Y: vertex.Y + 1},
+		{X: vertex.X + 1, Y: vertex.Y},
+		{X: vertex.X + 1, Y: vertex.Y - 1},
+	}
+}
+
+/* func geteVirtualConnectionVerts(vertex hex.Vertex) []hex.Vertex {
+	return []hex.Vertex{
+		{X: vertex.X + 1, Y: vertex.Y + 1},
+		{X: vertex.X + 2, Y: vertex.Y - 1},
+		{X: vertex.X - 1, Y: vertex.Y - 1},
+		{X: vertex.X - 2, Y: vertex.Y + 1},
+		{X: vertex.X + 1, Y: vertex.Y - 2},
+		{X: vertex.X - 1, Y: vertex.Y + 2},
+	}
+}
+
+func accountForVirtualConnects(ctx context.Context, allMoveList []hex.Vertex) []hex.Vertex {
+
+	moveList := extractPlayerMovesFromAllMoves(ctx, allMoveList)
+
+	k := 0
+	if ctx.Value(CurrentPlayerIDKey) == "B" {
+		k = 1
+	}
+	for k < len(moveList) {
+		move := allMoveList[k]
+		k += 2
+		virts := geteVirtualConnectionVerts(move)
+		for _, virt := range virts {
+			if containsVert(moveList, virt) {
+				// check is there is a point
+			}
+		}
+} */
 
 // allMovesList is the list of moves made by BOTH player, whereas the adjG                                                                                                                                                                        r
 func EvalWinCondition(ctx context.Context, adjG [][]int, allMovesList []hex.Vertex) bool {
@@ -434,4 +469,128 @@ func TestWinCondition() bool {
 	fmt.Printf("on turn %d, playerA win = %v", k, p1fin)
 
 	return p1fin
+}
+
+// checkMoveValidity checks the validity of the candidate move and returns an error if invalid.
+func checkMoveValidity(candidateMove string, allMoveList []Vertex) (bool, hex.Vertex, error) {
+	emptyVertex := hex.Vertex{X: -1, Y: -1}
+	// Split the move into parts
+	parts := strings.Split(candidateMove, ".")
+	if len(parts) != 4 {
+		return false, emptyVertex, errors.New("invalid move format")
+	}
+
+	turnPart, xStr, yStr, note := parts[0], parts[1], parts[2], parts[3]
+
+	// Calculate the turn number and player ID
+	turnNumber := int(math.Floor(float64(len(allMoveList) / 2)))
+	playerID := len(allMoveList) % 2
+
+	// Determine the expected next turn
+	var expectedNextTurn string
+	switch playerID {
+	case 0:
+		expectedNextTurn = fmt.Sprintf("%da", turnNumber)
+	case 1:
+		expectedNextTurn = fmt.Sprintf("%db", turnNumber)
+	default:
+		return false, emptyVertex, errors.New("invalid player ID")
+	}
+
+	// Compare expected next turn with the actual turn part
+	if turnPart != expectedNextTurn {
+		return false, emptyVertex, errors.New("move out of order")
+	}
+
+	// Convert X and Y to integers and check their range
+	x, err := parseCoordinate(xStr)
+	if err != nil || x < 1 || x > hex.SideLenGameboard {
+		return false, emptyVertex, errors.New("invalid X coordinate")
+	}
+
+	y, err := parseCoordinate(yStr)
+	if err != nil || y < 1 || y > hex.SideLenGameboard {
+		return false, emptyVertex, errors.New("invalid Y coordinate")
+	}
+
+	// Check for repeated moves (except for turn 0 swap condition)
+	for _, move := range allMoveList {
+		if move.X == x && move.Y == y {
+			if turnPart[:1] != "0" {
+				return false, emptyVertex, errors.New("repeated move")
+			} else if note != "swap" { // so if the indeed the
+				return false, emptyVertex, errors.New("invalid swap note")
+			}
+		}
+
+	}
+	// Additional checks for notes and game-over condition can be added here
+
+	return true, hex.Vertex{X: x, Y: y}, nil
+}
+
+// parseCoordinate parses a string that could be either a number or a letter (A-Z) and returns the corresponding integer value.
+func parseCoordinate(input string) (int, error) {
+	// First, try to parse it as a number
+	if num, err := strconv.Atoi(input); err == nil {
+		return num, nil
+	}
+
+	// If it's not a number, check if it's a single alphabetic character
+	if len(input) == 1 && strings.IndexFunc(input, func(r rune) bool {
+		return (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z')
+	}) == 0 {
+
+		return charToNum(rune(input[0])), nil
+	}
+
+	// If input is neither a number nor a single letter
+	return -1, fmt.Errorf("invalid input: %s", input)
+}
+
+// charToNum converts a character (case-insensitive) to a number: A/a -> 1, B/b -> 2, ..., Z/z -> 26.
+func charToNum(c rune) int {
+	upperC := strings.ToUpper(string(c))
+	return int(upperC[0]) - 'A' + 1
+}
+
+// REPLACE THIS WITH HEX.MOVE STRUCT
+type Move struct {
+	gameID       string
+	currPlayerID string
+	proposedMove string
+	playerA      uuid.UUID
+	playerB      uuid.UUID
+}
+
+func handleNewMoveEvent(move Move) error {
+
+	// we need to here try to pull the move from the cache. and if that fails then we move to the database
+	// gives us allMoveList at least.
+	allMoveList, adj := RetrieveFromCache(ctx, move.gameID, move.currPlayerID)
+
+	tf, newVert, err := checkMoveValidity(move.proposedMove, allMoveList)
+	if err != nil || !tf {
+		return fmt.Errorf("illegal move attempted: %v", err)
+	}
+
+	ctx := context.WithValue(context.Background(), CurrentPlayerIDKey, "B")
+	if currPlayerID == playerA.String() {
+		ctx = context.WithValue(context.Background(), CurrentPlayerIDKey, "A")
+	}
+
+	adj, moveList = IncorporateNewVert(ctx, moveList, adj, newVert)
+	winConMet := EvalWinCondition(ctx, adj, moveList)
+
+	if winConMet {
+		// broadcast game end
+		// declare another move with move 999 and condition as : 
+			// 'ongoing', 'forfeit', 'true_win', 'timeout', 'crash', 'veryshort'
+	} else {
+		// write to cache
+	}
+
+	// persist the end of the game
+
+	return nil
 }

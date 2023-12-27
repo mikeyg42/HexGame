@@ -1,4 +1,4 @@
-package main
+package database
 
 import (
 	"context"
@@ -13,8 +13,9 @@ import (
 	pgx "github.com/jackc/pgx/v5"
 	pgxpool "github.com/jackc/pgx/v5/pgxpool"
 	hex "github.com/mikeyg42/HexGame/structures"
+	"golang.org/x/crypto/bcrypt"
 
-	SQL_namedPreparedStmts "github.com/mikeyg42/HexGame/sqlconstants"
+	SQL_namedPreparedStmts "github.com/mikeyg42/HexGame/database/sqlconstants"
 	pgxUUID "github.com/vgarvardt/pgx-google-uuid/v5"
 )
 
@@ -22,10 +23,10 @@ type MemoryPersister struct{}
 
 const maxReadPoolSize = 10
 const maxWritePoolSize = 10
-const readTimeout = 2 * time.Second
-const writeTimeout = 2 * time.Second
+const readTimeout = 3 * time.Second
+const writeTimeout = 3 * time.Second
 const maxRetries = 3
-const retryDelay = 500 * time.Millisecond
+const retryDelay = 200 * time.Millisecond
 
 // ----------------------------------//
 func InitializePostgres() {
@@ -56,13 +57,25 @@ func InitializePostgres() {
 		panic(fmt.Errorf("failed to initialize read database schema: %w", err))
 	}
 
-	// Check admin permissions
-	tf, role, err1 := checkAdminPermissions(ctx, pool.WritePool)
-	tf2, role2, err2 := checkAdminPermissions(ctx, pool.ReadPool)
-	if role != "admin" || role2 != "admin" || err1 != nil || err2 != nil || !tf || !tf2 {
-		panic(fmt.Errorf("admin permission check failed: %v, %v", err1, err2))
+	// check if tables exist yet...
+	missingTables, err := check3Tables(ctx, pool.ReadPool, []string{"users", "games", "moves"})
+	if err != nil {
+		panic(fmt.Errorf("failed to check for existance of tables: %w", err))
 	}
-	fmt.Println("Successfully initialized connection pools with admin permissions")
+	// ... and if tables do not yet exist, make them
+	if len(missingTables) > 0 {
+		err := createMissingTables(ctx, pool.WritePool, missingTables)
+		if err != nil {
+			panic(fmt.Errorf("failed to create missing tables: %w", err))
+		}
+	}
+
+	// Perform comprehensive database setup check
+	if ok, err := isDatabaseSetupCorrectly(ctx, pool); err != nil || !ok {
+		panic(fmt.Errorf("database setup check failed: %v", err))
+	}
+	fmt.Println("Successfully initialized and verified the database setup")
+
 }
 
 func testConnection(ctx context.Context, pool *pgxpool.Pool) error {
@@ -73,30 +86,10 @@ func testConnection(ctx context.Context, pool *pgxpool.Pool) error {
 	return nil
 }
 
-func checkAdminPermissions(ctx context.Context, pool *pgxpool.Pool) (bool, string, error) {
-	var currentUser string
-	err := pool.QueryRow(ctx, "SELECT current_user").Scan(&currentUser)
-	if err != nil {
-		return false, "?", err
-		// handle error
-	}
-
-	if currentUser == "admin" {
-		return true, currentUser, nil
-	}
-
-	if strings.Contains(currentUser, "only") {
-		fmt.Println("Current user is, %s, is trying to initialize a database connection despite being read-only ", currentUser)
-		// indicates read-only permissions
-		return false, currentUser, nil
-	}
-	fmt.Println("Current user is, %s, is trying to initialize a database connection withou admin priv. this shouldnt be allowed!!! ", currentUser)
-	return false, currentUser, fmt.Errorf("unexpected user initializing database connection: %s", currentUser)
-}
-
-// check that the pools are working one at a time
+// check that both pools are working, one at a time
 func PingPooledConnections(ctx context.Context, p *hex.PooledConnections) error {
 	pool := p.WritePool
+
 	err := pool.Ping(ctx)
 	if err != nil {
 		err = fmt.Errorf("Unable to ping connection writepool: %v\n", err)
@@ -250,6 +243,9 @@ func makeAvail_NamedPreparedStatements(ctx context.Context, conn *pgx.Conn) erro
 		"AddNewGame":         SQL_namedPreparedStmts.Add_new_game,
 		"AddNewMove":         SQL_namedPreparedStmts.Add_new_move,
 		"DeleteGame":         SQL_namedPreparedStmts.Delete_game,
+		"CreateUserTable":    SQL_namedPreparedStmts.CreateTableSQL_users,
+		"CreateGameTable":    SQL_namedPreparedStmts.CreateTableSQL_games,
+		"CreateMoveTable":    SQL_namedPreparedStmts.CreateTableSQL_moves,
 	}
 
 	for name, sql := range prepStmts {
@@ -275,44 +271,78 @@ func makeAvail_NamedPreparedStatements(ctx context.Context, conn *pgx.Conn) erro
 	return nil
 }
 
-func isDatabaseSetupCorrectly(ctx context.Context, p *hex.PooledConnections) (bool, error) {
+func check3Tables(ctx context.Context, pool *pgxpool.Pool, tables []string) ([]string, error) {
+	missingTables := []string{}
 
-	// 1. Check for table existence
-	tables := []string{"users", "games", "moves"}
 	for _, table := range tables {
 		var tablename string
-		err := p.ReadPool.QueryRow(ctx, "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename = $1;", table).Scan(&tablename)
+		err := pool.QueryRow(ctx, "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename = $1;", table).Scan(&tablename)
 		if err != nil {
 			if err == pgx.ErrNoRows {
-				return false, fmt.Errorf("table %s does not exist", table)
+				missingTables = append(missingTables, table)
+			} else {
+				return nil, fmt.Errorf("error checking table %s: %w", table, err)
 			}
-			return false, err
 		}
 	}
 
-	// 2. Check for roles existence
-	roles := []string{"app_read", "app_write", "app_auth"}
-	for _, role := range roles {
-		var rolname string
-		err := p.ReadPool.QueryRow(ctx, "SELECT rolname FROM pg_roles WHERE rolname = $1;", role).Scan(&rolname)
-		if err != nil {
-			if err == pgx.ErrNoRows {
-				return false, fmt.Errorf("role %s does not exist: see pgx.ErrNoRows: %v", role, err)
-			}
-			return false, err
+	return missingTables, nil
+}
+
+func createMissingTables(ctx context.Context, pool *pgxpool.Pool, missingTables []string) error {
+	for _, table := range missingTables {
+		var preparedStatementName string
+		switch table {
+		case "users":
+			preparedStatementName = "CreateUserTable"
+		case "games":
+			preparedStatementName = "CreateGameTable"
+		case "moves":
+			preparedStatementName = "CreateMoveTable"
+		default:
+			continue
 		}
+
+		_, err := pool.Exec(ctx, preparedStatementName)
+		if err != nil {
+			return fmt.Errorf("failed to create table %s: %w", table, err)
+		}
+	}
+	return nil
+}
+
+// isDatabaseSetupCorrectly tests if the database is set up correctly. Should be called whenenever the server starts.
+//  1. Checks for the existence of the "server_admin" role. Also pings conns.
+//  2. Runs a test: inserts and retrieves dummy data to ensure proper data manipulation.
+//     We then delete the inserted dummy data and confirm the success of batch operations.
+func isDatabaseSetupCorrectly(ctx context.Context, p *hex.PooledConnections) (bool, error) {
+	// Parameters are context, and
+	// - p: A pointer to the hex.PooledConnections object representing the database connections.
+	//
+	// Returns a boolean indicating whether the database setup is correct and an error, if any
+
+	// Check for the existence of the server_admin role
+	var rolname string
+	err := p.ReadPool.QueryRow(ctx, "SELECT rolname FROM pg_roles WHERE rolname = $1;", "server_admin").Scan(&rolname)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return false, fmt.Errorf("role server_admin does not exist: %v", err)
+		}
+		return false, err
 	}
 
 	// ping connections
 	errPool := PingPooledConnections(ctx, p)
 	if errPool != nil {
-		panic(fmt.Errorf("Unable to ping connection pool: %v\n", errPool))
+		panic(fmt.Errorf("unable to ping connection pool: %v\n", errPool))
 	}
 
-	// 4. Insert and retrieve dummy data, then delete
+	// 3. Insert and retrieve dummy data, then delete
 	// make a dummy game entry using AddNew Game prepared statement
-	userID := uuid.Must(uuid.NewRandom()).String()
-	var gameID uuid.UUID
+	userID, err := New_UUIDstring()
+	if err != nil {
+		return false, fmt.Errorf("failed to generate dummy userID: %w", err)
+	}
 
 	tx, err := p.WritePool.Begin(ctx)
 	if err != nil {
@@ -324,10 +354,7 @@ func isDatabaseSetupCorrectly(ctx context.Context, p *hex.PooledConnections) (bo
 	if err != nil {
 		return false, fmt.Errorf("failed to insert dummy data into users: %w", err)
 	}
-	_, err = tx.Exec(ctx, "Add_new_ugae", userID, "password")
-	if err != nil {
-		panic(fmt.Errorf("Failed to execute prepared statement: %v\n", err))
-	}
+
 	// create a dummy user entry using AddNewUser prepared statement
 
 	var retrievedID string
@@ -335,6 +362,7 @@ func isDatabaseSetupCorrectly(ctx context.Context, p *hex.PooledConnections) (bo
 	if err != nil {
 		return false, fmt.Errorf("failed to retrieve dummy data from users: %w", err)
 	}
+
 	if retrievedID != userID {
 		return false, errors.New("retrieved dummy data does not match inserted data")
 	}
@@ -345,7 +373,6 @@ func isDatabaseSetupCorrectly(ctx context.Context, p *hex.PooledConnections) (bo
 
 	// Queue up your commands
 	batch.Queue("DELETE FROM users WHERE user_id = $1", userID)
-	batch.Queue("DeleteGame", gameID)
 
 	// Send the batch to the server
 	br := p.WritePool.SendBatch(ctx, batch)
@@ -358,49 +385,62 @@ func isDatabaseSetupCorrectly(ctx context.Context, p *hex.PooledConnections) (bo
 		return false, fmt.Errorf("failed to delete user data from users: %w", err)
 	}
 
-	// Check results for the second command
-	if _, err := br.Exec(); err != nil {
-		return false, fmt.Errorf("failed to delete game data: %w", err)
-	}
-
-	// If everything went fine
 	return true, nil
-	// Return true or any other result indicating success
-
 }
 
-func NEW_UUID() (string, error) {
-	newUUID := uuid.Must(uuid.NewRandom())
+func twoTries(f1 func() (interface{}, error)) (interface{}, error) {
+	result, err := f1()
+	if err != nil {
+		time.Sleep(retryDelay) // Delay before retrying
+		result, err = f1()     // Capture the result and error of the second attempt
+		if err != nil {
+			return nil, fmt.Errorf("failed to execute function twice: %w", err)
+		}
+	}
+	return result, nil
+}
 
-	return newUUID.String(), nil
+// Wraps the uuid.NewRandom() function to return a string instead of a uuid.UUID, and also to retry once if it fails
+func New_UUIDstring() (string, error) {
+	// this function twoTries will repeat a call to a function if and only if the first call fails, adding a tiny delay
+	userID, err := twoTries(func() (interface{}, error) {
+		return uuid.NewRandom()
+	})
+
+	if err != nil {
+		return "", err // Return the error instead of panicking
+	}
+
+	// uuid type assertion, because userID is an interface{} and needs to be asserted to uuid.UUID
+	uuidVal, ok := userID.(uuid.UUID)
+	if !ok {
+		return "", fmt.Errorf("failed to assert UUID type")
+	}
+
+	return uuidVal.String(), nil
 }
 
 // uses a transaction to delete from both tables all at once or not at all/
-func DeleteGameMemory(ctx context.Context, gameID string, writePool *pgxpool.Pool) error {
-	tx, err := writePool.Begin(ctx)
+func DeleteGame(ctx context.Context, gameID uuid.UUID, pool *pgxpool.Pool) error {
+	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx) // This will rollback if tx.Commit() isn't called
 
-	// Delete from moves table
-	deleteMovesQuery := `DELETE FROM moves WHERE game_id = $1;`
-	_, err = tx.Exec(ctx, deleteMovesQuery, gameID)
+	var wasDeleted bool
+	err = tx.QueryRow(ctx, "SELECT delete_game($1)", gameID).Scan(&wasDeleted)
 	if err != nil {
 		return err
 	}
 
-	// Delete from games table
-	deleteGameQuery := `DELETE FROM games WHERE game_id = $1;`
-	_, err = tx.Exec(ctx, deleteGameQuery, gameID)
-	if err != nil {
-		return err
+	if !wasDeleted {
+		return errors.New("game deletion failed: game not found")
 	}
 
 	// Commit the transaction if everything went fine
-	err = tx.Commit(ctx)
-	if err != nil {
-		return err
+	if err = tx.Commit(ctx); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	return nil
@@ -408,9 +448,11 @@ func DeleteGameMemory(ctx context.Context, gameID string, writePool *pgxpool.Poo
 
 func InitiateNewGame(playerA, playerB uuid.UUID, writePool *pgxpool.Pool) (uuid.UUID, error) {
 	var newGameID uuid.UUID
+	ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
+	defer cancel()
 
 	// Use the name of the prepared statement, provide the required parameters, and scan the result into newGameID
-	err := writePool.QueryRow(context.Background(), "AddNewGame", playerA, playerB).Scan(&newGameID)
+	err := writePool.QueryRow(ctx, "AddNewGame", playerA, playerB).Scan(&newGameID)
 	if err != nil {
 		fmt.Println("Failed to execute prepared statement AddNewGame: %v\n", err)
 		return uuid.Nil, err
@@ -419,29 +461,44 @@ func InitiateNewGame(playerA, playerB uuid.UUID, writePool *pgxpool.Pool) (uuid.
 	return newGameID, nil
 }
 
-// AddMoveToMemory() adds a move to the moves table
-func AddMoveToMemory(move hex.Move, pool *pgxpool.Pool) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+// AddMoveToMemory() adds a move to the database, using the prepared statement AddNewMove, returns the moveCounter stored in SQL
+func AddMoveToMemory(ctx context.Context, move hex.Move, pool *pgxpool.Pool) (hex.Move, error) {
+	// Extract the player code from the move (ie A or B)
+	playerCode := move.PlayerCode
 
-	sql := "INSERT INTO moves(gameID, playerID, move_info) VALUES($1, $2, $3)"
-	_, err := pool.Exec(ctx, sql, move.GameID, move.PlayerID, move.MoveDescription)
-
+	var moveCounter int
+	err := pool.QueryRow(ctx, "AddNewMove", move.GameID, playerCode, move.MoveDescription).Scan(&moveCounter)
 	if err != nil {
-		time.Sleep(retryDelay)
-		_, err = pool.Exec(ctx, sql, move.GameID, move.PlayerID, move.MoveDescription)
+		return move, fmt.Errorf("unable to add move to moves table: %w", err)
+	}
 
-		if err != nil {
-			panic(fmt.Errorf("Unable to add move to moves table: %v\n", err))
+	if !checkMoveNumber(moveCounter, move) {
+		fmt.Printf("Move counter mismatch: SQL says: %v while golang says: %v\n", moveCounter, move.MoveCounter)
+		if moveCounter > move.MoveCounter {
+
+			// check SQL for nearly duplicate entries?
+
+			move.MoveCounter = moveCounter
+
+		} else {
+			return move, fmt.Errorf("PostgreSQL did not persist everymove it should have properly bc its counter is too low \n")
 		}
 	}
 
-	return nil
+	return move, nil
+}
+
+func checkMoveNumber(moveCounter int, move hex.Move) bool {
+	if moveCounter != move.MoveCounter {
+		return false
+	}
+	return true
+
 }
 
 // this is a wrapper function for the exported Fetch commands fro the postgresQL database
 func FetchSomeMoveList(readPool *pgxpool.Pool, game hex.Game, whatToFetch string) ([]hex.Move, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), readTimeout)
 	defer cancel()
 
 	switch whatToFetch {
@@ -584,7 +641,7 @@ func UpdateGameOutcome(gameID uuid.UUID, outcome string, pool *pgxpool.Pool) err
 }
 
 func AddNewUser(username, passwordHash string, pool *pgxpool.Pool) (uuid.UUID, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
 	defer cancel()
 
 	var newUserID uuid.UUID
@@ -602,4 +659,33 @@ func AddNewUser(username, passwordHash string, pool *pgxpool.Pool) (uuid.UUID, e
 	return newUserID, err
 }
 
+func HashPassword(password string) (string, error) {
+	bytes, err := bcrypt.GenerateFromPassword([]byte(password), 14)
+	return string(bytes), err
+}
+
+func CheckPasswordHash(password, hash string) bool {
+	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
+	return err == nil
+}
+
+func Persist_EndGame(lastMove hex.Move, pool *pgxpool.Pool) error {
+	// this function will be called after evaluate win condition determines indeed there was a winner!!!
+
+	moveStrings := strings.Split(lastMove.MoveDescription, ".")
+	gameOutcome := moveStrings[len(moveStrings)-1]
+
+	if moveStrings[1] != "99" || moveStrings[2] != "99" || gameOutcome == "z" {
+		return fmt.Errorf("persist_endgame function is called but the game is not yet over! last move fmt should be 999x.99.99.wincondition, not: %v\n", lastMove.MoveDescription)
+	}
+
+	// update the game outcome
+	_, err := pool.Exec(context.Background(), "UpdateGameOutcomes", lastMove.GameID, gameOutcome)
+	//options for outcome are: 'ongoing', 'forfeit', 'true_win', 'timeout', 'crash', 'veryshort'
+
+	return err
+}
+
+// ensure that MemoryPersister implements all the methods of the _Persister interface,
+// even though the _Persister global variable is not used anywhere in the code.
 var _Persister = &MemoryPersister{}

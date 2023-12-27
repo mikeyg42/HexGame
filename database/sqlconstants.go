@@ -1,15 +1,19 @@
-package models
+package database
 
-// Function to register a new user and return their UUID.
+// Function to register a new user and return their UUID. adds user also into users table!!!
 const Add_new_user = `
 CREATE OR REPLACE FUNCTION add_new_user(p_username TEXT, p_password_hash TEXT) 
 RETURNS UUID AS $$
 DECLARE
     new_user_id UUID;
 BEGIN
-INSERT INTO users (user_id, username, password_hash, rank)
-VALUES (uuid_generate_v4(), p_username, p_password_hash, 1000)
-RETURNING user_id INTO new_user_id;
+    -- Insert new user into the users table
+    INSERT INTO users (user_id, username, password_hash, rank)
+    VALUES (uuid_generate_v4(), p_username, p_password_hash, 1000)
+    RETURNING user_id INTO new_user_id;
+
+    -- No longer creating individual roles for each user
+    -- All database interactions will be handled by server_admin
 
     RETURN new_user_id;
 END;
@@ -51,8 +55,11 @@ const Delete_game = `
 CREATE OR REPLACE FUNCTION delete_game(p_game_id UUID)
 RETURNS BOOLEAN AS $$
 BEGIN
-    DELETE FROM games
-    WHERE game_id = p_game_id;
+    -- Delete related moves
+    DELETE FROM moves WHERE game_id = p_game_id;
+
+    -- Delete the game
+    DELETE FROM games WHERE game_id = p_game_id;
 
     IF FOUND THEN
         RETURN TRUE;
@@ -108,17 +115,18 @@ $$ LANGUAGE plpgsql;
 // then we Generate the player_game_code by concatenating the game_id with the player_code
 const Add_new_move = `
 CREATE OR REPLACE FUNCTION add_new_move(p_game_id UUID, p_player_code CHAR, p_move_description TEXT) 
-RETURNS void AS $$
+RETURNS INT AS $$
 DECLARE
     next_move_counter INT;
     generated_player_game_code TEXT;
 BEGIN
-
     SELECT COALESCE(MAX(move_counter), 0) + 1 INTO next_move_counter FROM moves WHERE game_id = p_game_id;
     generated_player_game_code := p_game_id::TEXT || '-' || p_player_code;
 
     INSERT INTO moves (game_id, player_code, player_game_code, move_description, move_counter)
     VALUES (p_game_id, p_player_code, generated_player_game_code, p_move_description, next_move_counter);
+
+    RETURN next_move_counter;
 END;
 $$ LANGUAGE plpgsql;
 `
@@ -149,7 +157,7 @@ const CreateTableSQL_users = `CREATE TABLE IF NOT EXISTS users (
     rank INT NOT NULL DEFAULT 1000
 );`
 
-const CreateTableSQL_games = `CREATE TABLE IF NOT EXISTS users (
+const CreateTableSQL_games = `CREATE TABLE IF NOT EXISTS games (
     game_id UUID PRIMARY KEY,
     playerA_id UUID REFERENCES users(user_id),
     playerB_id UUID REFERENCES users(user_id),
@@ -160,7 +168,7 @@ const CreateTableSQL_games = `CREATE TABLE IF NOT EXISTS users (
 CREATE INDEX idx_outcome ON games(outcome);
 `
 
-const CreateTableSQL_moves = `CREATE TABLE IF NOT EXISTS users (
+const CreateTableSQL_moves = `CREATE TABLE IF NOT EXISTS moves (
 	move_id UUID PRIMARY KEY,
     move_counter INT NOT NULL DEFAULT SERIAL_NEXTVAL('moves_move_id_seq'),
     game_id UUID REFERENCES games(game_id),
@@ -179,25 +187,17 @@ const CreateGameOutcomeEnum = `CREATE TYPE game_outcome AS ENUM ('ongoing', 'for
 
 const Revoke = `REVOKE ALL ON users FROM PUBLIC;`
 
-const GrantAccess = `
-GRANT SELECT ON games, moves TO app_read;
-GRANT SELECT(username, user_id) ON users TO app_read;
 
-GRANT INSERT, UPDATE, DELETE ON games, moves TO app_write;
-GRANT SELECT(username, user_id) ON users TO app_read;
-GRANT SELECT(password_hash) ON users TO app_auth;
+const CreateRoles = `
+CREATE ROLE IF NOT EXISTS server_admin;
+`
+
+const GrantAccess = `
+GRANT SELECT ON games, moves TO server_admin;
+GRANT SELECT, INSERT, UPDATE, DELETE ON users TO server_admin;
 `
 
 const GrantExecute = `
-GRANT EXECUTE ON FUNCTION add_new_game(UUID, UUID), fetch_ongoing_games(UUID, UUID), delete_game(UUID) TO app_read, app_write;
-GRANT EXECUTE ON FUNCTION update_game_outcome(UUID, game_outcome), add_new_user(TEXT, TEXT) TO app_write;
-GRANT EXECUTE ON FUNCTION          TO tester;
-
-`
-
-const CreateRoles = `
-CREATE ROLE IF NOT EXISTS app_read;
-CREATE ROLE IF NOT EXISTS app_write;
-CREATE ROLE IF NOT EXISTS app_auth;
-CREATE ROLE IF NOT EXISTS tester;
+GRANT EXECUTE ON FUNCTION add_new_game(UUID, UUID), fetch_ongoing_games(UUID, UUID), delete_game(UUID) TO server_admin;
+GRANT EXECUTE ON FUNCTION update_game_outcome(UUID, game_outcome), add_new_user(TEXT, TEXT) TO server_admin;
 `

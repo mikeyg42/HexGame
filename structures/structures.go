@@ -111,10 +111,9 @@ type Move struct {
 	MoveID          int       `db:"move_id"`
 	GameID          uuid.UUID `db:"game_id"`
 	PlayerID        uuid.UUID `db:"player_id"`
-	PlayerCode      string    `db:"player_code"`
+	PlayerCode      string    `db:"player_code"` // refers to player A or player B
 	PlayerGameCode  string    `db:"player_game_code"`
 	MoveDescription string    `db:"move_description"`
 	MoveTime        time.Time `db:"move_time"`
-	// Assuming from the latest three moves function
-	MoveCounter int `db:"move_counter"`
+	MoveCounter     int       `db:"move_counter"`
 }
