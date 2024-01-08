@@ -13,51 +13,40 @@ import (
 
 const cleanUpCheckFrequency = 1 * time.Minute
 const expirationTime = 5 * time.Minute
-const maxEntries = int64(1000)
+const maxEntries = int64(500)
 
 type MyCache struct {
-	cacheMap    *xsync.MapOf[CacheKey, CacheValue]
+	CacheMap    *xsync.MapOf[hex.CacheKey, hex.CacheValue]
 	entryCount  int64 // Atomic counter for the number of entries
 	cleanupChan chan struct{}
 }
 
-// CacheKey represents the key for each cache entry.
-type CacheKey struct {
-	GameID      int
-	MoveCounter int
-}
-
-// CacheValue represents a single entry in our cache.
-type CacheValue struct {
-	GameState  []hex.Vertex
-	Expiration int64
-}
 
 // isExpired checks if the cache entry is expired.
-func (ce CacheValue) isExpired() bool {
-	return time.Now().UTC().UnixNano() > ce.Expiration
+func isExpired(val hex.CacheValue) bool {
+	return time.Now().UTC().UnixNano() > val.Expiration
 }
 
 func NewCache() *MyCache {
 	var h maphash.Hash
-	cacheMap := xsync.NewTypedMapOf[CacheKey, CacheValue](func(key CacheKey) uint64 {
+	cacheMap := xsync.NewTypedMapOf[hex.CacheKey, hex.CacheValue](func(key hex.CacheKey) uint64 {
 		h.Reset()
 		h.WriteString(fmt.Sprintf("%v:%v", key.GameID, key.MoveCounter))
 		return h.Sum64()
 	})
 
 	return &MyCache{
-		cacheMap:    cacheMap,
+		CacheMap:    cacheMap,
 		entryCount:  0,
 		cleanupChan: make(chan struct{}),
 	}
 }
 
-// SetCacheValue sets a CacheValue in the cache.
-func (myC *MyCache) SetCacheValue(key CacheKey, gameState []hex.Vertex) {
+// Sethex.CacheValue sets a hex.CacheValue in the cache.
+func (myC *MyCache) SetCacheValue(key hex.CacheKey, gameState []hex.Vertex) {
 	expiration := time.Now().Add(expirationTime).UTC().UnixNano()
 
-	myC.cacheMap.Store(key, CacheValue{
+	myC.CacheMap.Store(key, hex.CacheValue{
 		GameState:  gameState,
 		Expiration: expiration,
 	})
@@ -67,18 +56,18 @@ func (myC *MyCache) SetCacheValue(key CacheKey, gameState []hex.Vertex) {
 
 }
 
-// GetCacheValue retrieves a CacheValue from the cache.
-func (myC *MyCache) GetCacheValue(key CacheKey) (CacheValue, bool) {
-	entry, ok := myC.cacheMap.Load(key)
-	if ok && !entry.isExpired() {
+// Gethex.CacheValue retrieves a hex.CacheValue from the cache.
+func (myC *MyCache) GetCacheValue(key hex.CacheKey) (hex.CacheValue, bool) {
+	entry, ok := myC.CacheMap.Load(key)
+	if ok && !isExpired(entry) {
 		return entry, true
 	}
-	return CacheValue{}, false
+	return hex.CacheValue{}, false
 }
 
-// DeleteCacheValue deletes a CacheValue from the cache.
-func (myC *MyCache) DeleteCacheValue(key CacheKey) {
-	myC.cacheMap.Delete(key)
+// Deletehex.CacheValue deletes a hex.CacheValue from the cache.
+func (myC *MyCache) DeleteCacheValue(key hex.CacheKey) {
+	myC.CacheMap.Delete(key)
 
 	// Decrement the entry count
 	atomic.AddInt64(&myC.entryCount, -1)
@@ -91,14 +80,14 @@ func (myC *MyCache) MonitorCacheSize(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if myC.IsTooBig() {
+			if myC.isTooBig() {
 				myC.cleanupChan <- struct{}{}
 			}
 		}
 	}
 }
 
-func (myC *MyCache) IsTooBig() bool {
+func (myC *MyCache) isTooBig() bool {
 	currentCount := atomic.LoadInt64(&myC.entryCount)
 	return currentCount > maxEntries
 }
@@ -109,13 +98,14 @@ func (myC *MyCache) Cleanup(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+			
 		case <-myC.cleanupChan:
 			// Map to keep track of the highest move counter for each game
 			highestMoves := make(map[int]int)
 
 			// Range over the cache
-			myC.cacheMap.Range(func(key CacheKey, val CacheValue) bool {
-				if val.isExpired() {
+			myC.CacheMap.Range(func(key hex.CacheKey, val hex.CacheValue) bool {
+				if isExpired(val) {
 					myC.DeleteCacheValue(key)
 				} else {
 					if currentHighest, found := highestMoves[key.GameID]; !found || key.MoveCounter > currentHighest {
@@ -126,7 +116,7 @@ func (myC *MyCache) Cleanup(ctx context.Context) {
 			})
 
 			// Remove all entries except for the one with the highest move counter for each game
-			myC.cacheMap.Range(func(key CacheKey, _ CacheValue) bool {
+			myC.CacheMap.Range(func(key hex.CacheKey, _ hex.CacheValue) bool {
 				if key.MoveCounter < highestMoves[key.GameID] {
 					myC.DeleteCacheValue(key)
 				}
@@ -150,7 +140,7 @@ func main() {
 	go myC.Cleanup(ctx)
 
 	//....
-	SetCacheValue(CacheKey{GameID: 1, MoveCounter: 3}, []hex.Vertex{{X: 3, Y: 2}, {X: 2, Y: 2}, {X: 3, Y: 4}})
+	Sethex.CacheValue(hex.CacheKey{GameID: 1, MoveCounter: 3}, []hex.Vertex{{X: 3, Y: 2}, {X: 2, Y: 2}, {X: 3, Y: 4}})
 }
 
 */

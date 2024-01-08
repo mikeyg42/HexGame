@@ -497,22 +497,24 @@ func checkMoveNumber(moveCounter int, move hex.Move) bool {
 }
 
 // this is a wrapper function for the exported Fetch commands fro the postgresQL database
-func FetchSomeMoveList(readPool *pgxpool.Pool, game hex.Game, whatToFetch string) ([]hex.Move, error) {
+func FetchSomeMoveList(p *hex.PooledConnections, gameID, whatToFetch string) ([]hex.Move, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), readTimeout)
 	defer cancel()
 
 	switch whatToFetch {
 	case "entireGame":
-		return FetchLatestThreeMovesInGame(ctx, game.GameID, readPool)
+		return FetchLatestThreeMovesInGame(ctx, gameID, p.ReadPool)
 
 	case "playerA":
-		return FetchParticularPlayersMoves(ctx, game.PlayerAID, readPool)
+		playerGameCode := gameID + "-A"
+		return FetchParticularPlayersMoves(ctx, playerGameCode, p.ReadPool)
 
 	case "playerB":
-		return FetchParticularPlayersMoves(ctx, game.PlayerBID, readPool)
+		playerGameCode := gameID + "-B"
+		return FetchParticularPlayersMoves(ctx, playerGameCode, p.ReadPool)
 
 	case "latestThree":
-		return FetchLatestThreeMovesInGame(ctx, game.GameID, readPool)
+		return FetchLatestThreeMovesInGame(ctx, gameID, p.ReadPool)
 
 	default:
 		err := fmt.Errorf("invalid input to FetchSomeMoveList(): %v\n", whatToFetch)
@@ -520,8 +522,8 @@ func FetchSomeMoveList(readPool *pgxpool.Pool, game hex.Game, whatToFetch string
 	}
 }
 
-func FetchLatestThreeMovesInGame(ctx context.Context, gameID uuid.UUID, readPool *pgxpool.Pool) ([]hex.Move, error) {
-
+func FetchLatestThreeMovesInGame(ctx context.Context, gameID string, readPool *pgxpool.Pool) ([]hex.Move, error) {
+	
 	rows, err := readPool.Query(ctx, "Fetch3recentMoves", gameID)
 	if err != nil {
 		time.Sleep(retryDelay)
@@ -545,7 +547,7 @@ func FetchLatestThreeMovesInGame(ctx context.Context, gameID uuid.UUID, readPool
 	return latestMoves, nil
 }
 
-func FetchParticularPlayersMoves(ctx context.Context, playerGameCode uuid.UUID, readPool *pgxpool.Pool) ([]hex.Move, error) {
+func FetchParticularPlayersMoves(ctx context.Context, playerGameCode string, readPool *pgxpool.Pool) ([]hex.Move, error) {
 
 	rows, err := readPool.Query(ctx, "FetchAPlayersMoves", playerGameCode)
 	if err != nil {

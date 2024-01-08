@@ -187,7 +187,6 @@ const CreateGameOutcomeEnum = `CREATE TYPE game_outcome AS ENUM ('ongoing', 'for
 
 const Revoke = `REVOKE ALL ON users FROM PUBLIC;`
 
-
 const CreateRoles = `
 CREATE ROLE IF NOT EXISTS server_admin;
 `

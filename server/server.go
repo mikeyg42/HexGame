@@ -254,7 +254,7 @@ func writeTimeout(ctx context.Context, timeout time.Duration, c *websocket.Conn,
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	return c.Write(ctx, websocket.EventMsgs, msg)
+	return c.Write(ctx, websocket.MessageType(websocket.StatusInternalError), msg)
 }
 
 func ReadFromWebsocket(ctx context.Context, c *websocket.Conn) (string, []byte, error) {
@@ -265,13 +265,14 @@ func ReadFromWebsocket(ctx context.Context, c *websocket.Conn) (string, []byte, 
 	}
 
 	// Ensure you've read enough bytes for the topic.
-	if len(msg) < topicCodeLength+2 {
+	if len(msg) < topicCodeLength+2 { 
+		// this +2 is not arbitrary. there will be  # delimiting topic and msg. and msg must be at least 1 char. 
 		return "", nil, errors.New("message too short to contain topic  abort before reading payload")
 	}
 
 	// Extract topic and return
 	topic := string(msg[:topicCodeLength])
-	return topic, msg[topicCodeLength+1:], nil
+	return topic, msg[topicCodeLength:], nil
 }
 
 func WriteToWebsocket(ctx context.Context, c *websocket.Conn, msg []byte) error {
@@ -296,7 +297,7 @@ func handleWebsocketConnection(ctx context.Context, c *websocket.Conn, geb *evt.
 
 		// Here, you can prepend the topic.
 		topic := "YOUR_TOPIC" // You need to determine how to set the topic.
-		msgWithTopic := prependTopicToPayload(topic, msg)
+		msgWithTopic := prependTopicToPayload(topic, msg) // prepends with the correct delimiter
 
 		geb.DispatchMessage(string(msgWithTopic))
 	}

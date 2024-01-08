@@ -7,8 +7,11 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
-	"github.com/google/uuid"
+	cache "github.com/mikeyg42/HexGame/cache"
+	db "github.com/mikeyg42/HexGame/database"
 	hex "github.com/mikeyg42/HexGame/structures"
 )
 
@@ -403,7 +406,6 @@ func checkCondition2(moveList []hex.Vertex) bool {
 func TestWinCondition() bool {
 
 	player1moves := []hex.Vertex{
-
 		{X: 2, Y: 1},
 		{X: 2, Y: 2},
 		{X: 2, Y: 3},
@@ -471,18 +473,19 @@ func TestWinCondition() bool {
 	return p1fin
 }
 
-// checkMoveValidity checks the validity of the candidate move and returns an error if invalid.
+// checkMoveValidity checks the validity of the candidate move and returns an error if invalid. it codifies the redundancy of the cache and the persistence
 func checkMoveValidity(candidateMove string, allMoveList []hex.Vertex) (bool, hex.Vertex, error) {
+	
+	// first we parse the candidate move into its constituent parts, which we save individually as strings
 	emptyVertex := hex.Vertex{X: -1, Y: -1}
 	// Split the move into parts
 	parts := strings.Split(candidateMove, ".")
 	if len(parts) != 4 {
 		return false, emptyVertex, errors.New("invalid move format")
 	}
-
 	turnPart, xStr, yStr, note := parts[0], parts[1], parts[2], parts[3]
 
-	// Calculate the turn number and player ID
+	// Now we parse the player ID and turn number from the iported allMoveList, which we will compare to the candidate move 
 	turnNumber := int(math.Floor(float64(len(allMoveList) / 2)))
 	playerID := len(allMoveList) % 2
 
@@ -554,20 +557,99 @@ func charToNum(c rune) int {
 	return int(upperC[0]) - 'A' + 1
 }
 
-// REPLACE THIS WITH HEX.MOVE STRUCT
-type Move struct {
-	gameID       string
-	currPlayerID string
-	proposedMove string
-	playerA      uuid.UUID
-	playerB      uuid.UUID
+func getAllMoveList(cache *cache.MyCache, dbPool *hex.PooledConnections, gameID string) ([]hex.Vertex, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second) // 1-second timeout
+	defer cancel()
+
+	var cacheMoves []hex.Vertex
+	var dbMoves []hex.Vertex
+	var cacheErr, dbErr error
+	var wg sync.WaitGroup
+
+	wg.Add(2)
+
+	// MUST DEFINE GAMEID AND MOVECOUNTER vars
+	// Cache retrieval go routine
+
+	go func() {
+		defer wg.Done()
+		select {
+		case <-ctx.Done():
+			errorChan <- ctx.Err()
+		default:
+			gameIDInt, err := strconv.Atoi(gameID)
+			if err != nil {
+				cacheErr = errors.Join(cacheErr, fmt.Errorf("failed to convert gameID to int: %v", err))
+			} else {
+				cacheMoves, tf := cache.GetCacheValue(hex.CacheKey{GameID: gameIDInt, MoveCounter: moveCounter})
+			}
+
+			if !tf {
+				cacheErr = errors.Join(cacheErr, fmt.Errorf("failed to extract allMovesList from cache for gameID: %v and moveCounter: %v", gameID, moveCounter))
+			} 
+
+			if cacheErr != nil {
+				errorChan <- cacheErr
+			} else {
+				successChan <- true
+			}
+		}
+	}()
+		
+	go func() {
+		defer wg.Done()
+		select {
+		case <-ctx.Done():
+			errorChan <- ctx.Err()
+		default:
+			dbMoves, dbErr = db.FetchSomeMoveList(dbPool, gameID.(uuid.UUID), "entireGame")
+			if dbErr != nil {,
+				errorChan <- dbErr
+			} else {
+				successChan <- true
+			},,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+		}
+	}()
+
+// Close the channels as no more data will be sent
+close(errorChan)
+close(successChan)
+
+var errorsReceived []error
+var successCount int
+
+for {
+    select {
+    case err, ok := <-errorChan:
+        if !ok {
+            errorChan = nil
+        } else {
+            errorsReceived = append(errorsReceived, err)
+        }
+    case _, ok := <-successChan:
+        if !ok {
+            successChan = nil
+        } else {
+            successCount++
+        }
+    }
+
+    if errorChan == nil && successChan == nil {
+        break
+    }
+	// Handle the received errors and successes
+// For exampl  Se, if successCount < 2, handle partial failure
+// Or, if len(errorsReceived) > 0, handle errors
+
+	// Decide which data source to use
+	return selectDataSource(cacheMoves, dbMoves, cacheErr, dbErr), nil
 }
 
 func handleNewMoveEvent(move Move) error {
 
 	// we need to here try to pull the move from the cache. and if that fails then we move to the database
 	// gives us allMoveList at least.
-	allMoveList, adj := RetrieveFromCache(ctx, move.gameID)
+	allMoveList, adj := getAllMoveList(ctx, move.gameID)
 
 	tf, newVert, err := checkMoveValidity(move.proposedMove, allMoveList)
 	if err != nil || !tf {

@@ -115,5 +115,20 @@ type Move struct {
 	PlayerGameCode  string    `db:"player_game_code"`
 	MoveDescription string    `db:"move_description"`
 	MoveTime        time.Time `db:"move_time"`
-	MoveCounter     int       `db:"move_counter"`
+	MoveCounter     int       `db:"move_counter"` // does not refer to turn #, is count of tiles played in game(possibly-1)
+}
+
+
+// CACHE
+
+// CacheKey represents the key for each cache entry.
+type CacheKey struct {
+	GameID      int
+	MoveCounter int // note, this is not turn #, but the move # for the game (ie corresponds to tiles played by either player)
+}
+
+// CacheValue represents a single entry in our cache.
+type CacheValue struct {
+	GameState  []Vertex // allMovesList
+	Expiration int64 // UTC time in unix nano format
 }
