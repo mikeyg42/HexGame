@@ -25,18 +25,32 @@ import (
 )
 
 const topicCodeLength = 5 // fixed legth of the topic code
+const heartbeatInterval = time.Second * 30 // 30 seconds, adjust as needed
+
 
 // move this to the main MAIN funtion
 func main() {
-	err := runWebsocketServer("localhost:8080")
+
+	lobbyServ := newChatServer()
+	err := runWebsocketServer(lobbyServ, "localhost:8080")
 	if err != nil {
 		panic(err)
 	}
 
+
+
+
+    go func() {
+        for {
+            time.Sleep(heartbeatInterval)
+            lobbyServ.UnresponsiveClients()
+        }
+    }()
+
 }
 
 // run initializes the lobbyServer and starts the HTTP server.
-func runWebsocketServer(tcpAddr string) error {
+func runWebsocketServer(lb *lobbyServer, tcpAddr string) error {
 	mainCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -101,7 +115,10 @@ type lobbyServer struct {
 
 	subscribersMu sync.Mutex
 	subscribers   map[*subscriber]struct{} // struct contains the events channel and a func to call if they "cant hang"
+
+	lastHeartbeat time.Time  // Add this field to track the last heartbeat
 }
+
 
 type myServer struct {
 	server *http.Server
@@ -145,15 +162,18 @@ func newChatServer() *lobbyServer {
 type subscriber struct {
 	evts         chan []byte // channel to receive dispatches from eventBus
 	closeTooSlow func()      // if the client cannot keep up with the eventMsgs, closeTooSlow is called
+	lastHeartbeat time.Time 	// will allow us to ascertain if the client is still connected/responsive
 }
 
 func (lobbyServ *lobbyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	lobbyServ.serveMux.ServeHTTP(w, r)
 }
 
+
 // subscribeHandler accepts the WebSocket connection and then subscribes
-// it to all future eventMsgserver.
+// it to all future event messages. (Newly Refactored Version)
 func (lobbyServ *lobbyServer) subscribeHandler(w http.ResponseWriter, r *http.Request) {
+	// Accept WebSocket connection (same as in your existing code)
 	c, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		lobbyServ.logf("%v", err)
@@ -161,18 +181,43 @@ func (lobbyServ *lobbyServer) subscribeHandler(w http.ResponseWriter, r *http.Re
 	}
 	defer c.Close(websocket.StatusInternalError, "")
 
+	// Existing subscription logic...
 	err = lobbyServ.subscribe(r.Context(), c)
-	if errors.Is(err, context.Canceled) {
+	if handleConnectionClose(err) {
 		return
 	}
-	if websocket.CloseStatus(err) == websocket.StatusNormalClosure ||
-		websocket.CloseStatus(err) == websocket.StatusGoingAway {
-		return
+
+	// Initialize the last heartbeat time
+	lobbyServ.lastHeartbeat = time.Now()
+
+	// Set up error group for managing concurrent operations (new)
+	g, ctx := errgroup.WithContext(r.Context())
+
+	// Handle WebSocket events (new)
+	g.Go(func() error {
+		return lobbyServ.handleWebSocketEvents(ctx, c)
+	})
+
+	// Handle heartbeat messages (new)
+	g.Go(func() error {
+		return lobbyServ.sendHeartbeatMessages(ctx, c)
+	})
+
+	// Wait for all goroutines to finish (new)
+	if err := g.Wait(); err != nil {
+		lobbyServ.logf("Error: %v", err)
 	}
-	if err != nil {
-		lobbyServ.logf("%v", err)
-		return
-	}
+}
+
+func (lobbyServ *lobbyServer) checkUnresponsiveClients() {
+    lobbyServ.subscribersMu.Lock()
+    defer lobbyServ.subscribersMu.Unlock()
+
+    for s := range lobbyServ.subscribers {
+        if time.Since(s.lastHeartbeat) > 2*heartbeatInterval {
+            go s.closeTooSlow() // or any other action you deem appropriate
+        }
+    }
 }
 
 // publishHandler reads the request body with a limit of 8192 bytes and then publishes
@@ -204,7 +249,7 @@ func (lobbyServ *lobbyServer) subscribe(ctx context.Context, c *websocket.Conn) 
 			c.Close(websocket.StatusPolicyViolation, "connection too slow to keep up with eventMsgs")
 		},
 	}
-
+ 
 	lobbyServ.AddSubscriber(s)
 	defer lobbyServ.DeleteSubscriber(s)
 
@@ -250,14 +295,39 @@ func (lobbyServ *lobbyServer) DeleteSubscriber(s *subscriber) {
 	lobbyServ.subscribersMu.Unlock()
 }
 
+// writeTimeout writes a message to the WebSocket connection with a timeout
 func writeTimeout(ctx context.Context, timeout time.Duration, c *websocket.Conn, msg []byte) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	return c.Write(ctx, websocket.MessageType(websocket.StatusInternalError), msg)
+	
 }
 
+
+// sendHeartbeatMessages sends heartbeat messages at regular intervals
+func (lobbyServ *lobbyServer) sendHeartbeatMessages(ctx context.Context, c *websocket.Conn) error {
+	ticker := time.NewTicker(heartbeatInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			heartbeatMsg := []byte("heartbeat")
+			if err := writeTimeout(ctx, time.Second*5, c, heartbeatMsg); err != nil {
+				lobbyServ.logf("Heartbeat failed: %v", err)
+				return err
+			}
+			lobbyServ.lastHeartbeat = time.Now()
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+
 func ReadFromWebsocket(ctx context.Context, c *websocket.Conn) (string, []byte, error) {
+
 	msg := make([]byte, 0, 1024)
 	err := wsjson.Read(ctx, c, &msg)
 	if err != nil {
@@ -267,7 +337,7 @@ func ReadFromWebsocket(ctx context.Context, c *websocket.Conn) (string, []byte, 
 	// Ensure you've read enough bytes for the topic.
 	if len(msg) < topicCodeLength+2 { 
 		// this +2 is not arbitrary. there will be  # delimiting topic and msg. and msg must be at least 1 char. 
-		return "", nil, errors.New("message too short to contain topic  abort before reading payload")
+		return "", nil, errors.New("message too short to contain topic... abort before reading payload")
 	}
 
 	// Extract topic and return
@@ -276,7 +346,7 @@ func ReadFromWebsocket(ctx context.Context, c *websocket.Conn) (string, []byte, 
 }
 
 func WriteToWebsocket(ctx context.Context, c *websocket.Conn, msg []byte) error {
-	yn_json := json.Valid([]byte(msg))
+	yn_json := json.Valid([]byte(msg)) && len(msg) < 2
 	if yn_json {
 		err := wsjson.Write(ctx, c, msg)
 		return err
@@ -299,11 +369,65 @@ func handleWebsocketConnection(ctx context.Context, c *websocket.Conn, geb *evt.
 		topic := "YOUR_TOPIC" // You need to determine how to set the topic.
 		msgWithTopic := prependTopicToPayload(topic, msg) // prepends with the correct delimiter
 
-		geb.DispatchMessage(string(msgWithTopic))
+		geb.DispatchMessage(String(msgWithTopic))
 	}
 }
 
 func prependTopicToPayload(topic string, payload []byte) []byte {
 	topicBytes := []byte(topic + hex.Delimiter)
 	return append(topicBytes, payload...)
+}
+
+func (lobbyServ *lobbyServer) handleWebSocketEvents(ctx context.Context, c *websocket.Conn) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			messageType, p, err := c.ReadMessage()
+			if err != nil {
+				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+					lobbyServ.logf("WebSocket closed: %v", err)
+					return nil
+				}
+				lobbyServ.logf("Error reading WebSocket message: %v", err)
+				return err
+			}
+
+			if err := lobbyServ.processMessage(messageType, p); err != nil {
+				lobbyServ.logf("Error processing message: %v", err)
+				// Optionally send error response to client
+				return err
+			}
+		}
+	}
+}
+
+
+// processMessage handles different types of messages received over WebSocket
+func (lobbyServ *lobbyServer) processMessage(messageType int, message []byte) error {
+	// Parse and handle different message types
+	// Example: MessageTypeMove, MessageTypeConnectivityCheck, MessageTypeShutdown
+	switch messageType {
+	case MessageTypeMove:
+		return lobbyServ.handleMove(message)
+	case MessageTypeConnectivityCheck:
+		return lobbyServ.handleConnectivityCheck()
+	case MessageTypeShutdown:.;
+		return lobbyServ.handleShutdown()
+	default:
+		return fmt.Errorf("unknown message type: %d", messageType)
+	}
+}
+
+
+
+// handleConnectivityCheck handles a connectivity check message
+func (lobbyServ *lobbyServer) handleConnectivityCheck() error {
+	// Perform necessary actions to check and confirm connectivity
+}
+
+// handleShutdown handles a shutdown message, indicating a game or server shutdown
+func (lobbyServ *lobbyServer) handleShutdown() error {
+	// Perform necessary actions for a graceful shutdown
 }

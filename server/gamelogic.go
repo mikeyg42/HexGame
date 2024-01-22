@@ -21,20 +21,10 @@ const (
 	CurrentPlayerIDKey myKey = "currentPlayerID"
 )
 
-/*
-type GameInfo struct {
-	WorkerID string
 
-			EvaluateProposedMoveLegality func(context.Context, hex.Vertex) bool
-		 	EvaluateWinCondition()
-			BroadcastGameEnd()
-			BroadcastConnectionFail()
-			DemandPlayersAck()
-
-}
-*/
-
-// game board is going to be 15x15 for now, with 1,1 being the bottom left corner.
+/
+// game board is going to be a 15x15 parallelogra. for now, at least. We will use axial coordinates with the y-axis turnd fro its usual position orthogonal to the x downwards arouund/./
+// with 1,1 being the bottom left corner.
 
 // rows 0 and 16 are the hidden points for both players
 
@@ -561,6 +551,7 @@ func getAllMoveList(cache *cache.MyCache, dbPool *hex.PooledConnections, gameID 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second) // 1-second timeout
 	defer cancel()
 
+	// implementing my own basic cache
 	var cacheMoves []hex.Vertex
 	var dbMoves []hex.Vertex
 	var cacheErr, dbErr error
@@ -569,6 +560,7 @@ func getAllMoveList(cache *cache.MyCache, dbPool *hex.PooledConnections, gameID 
 	wg.Add(2)
 
 	// MUST DEFINE GAMEID AND MOVECOUNTER vars
+
 	// Cache retrieval go routine
 
 	go func() {

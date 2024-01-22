@@ -48,7 +48,7 @@ type TimerController interface {
 }
 
 type LobbyController interface {
-	PublishPairing()    //done
+	PublishPairing(match []byte) ([2]string, error)    // match is a slice of bytes containiing game ID. the array of strings has 2 players
 	LockPairIntoMatch() //partly done
 	CleanupAfterMatch() // need to write
 	MatchmakingLoop()   //done

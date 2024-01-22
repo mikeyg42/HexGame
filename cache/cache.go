@@ -42,7 +42,7 @@ func NewCache() *MyCache {
 	}
 }
 
-// Sethex.CacheValue sets a hex.CacheValue in the cache.
+// SetCacheValue sets a CacheValue in thecache.
 func (myC *MyCache) SetCacheValue(key hex.CacheKey, gameState []hex.Vertex) {
 	expiration := time.Now().Add(expirationTime).UTC().UnixNano()
 
@@ -53,20 +53,20 @@ func (myC *MyCache) SetCacheValue(key hex.CacheKey, gameState []hex.Vertex) {
 
 	// Increment the entry count
 	atomic.AddInt64(&myC.entryCount, 1)
-
+) (hex.CacheValue, bool) {
+	entry, ok := myC.CacheMap.Load(key)
 }
 
-// Gethex.CacheValue retrieves a hex.CacheValue from the cache.
-func (myC *MyCache) GetCacheValue(key hex.CacheKey) (hex.CacheValue, bool) {
-	entry, ok := myC.CacheMap.Load(key)
+// GetCacheValue retrieves a CacheValue from the cache.
+func (myC *MyCache) GetCacheValue(key hex.CacheKey
 	if ok && !isExpired(entry) {
 		return entry, true
 	}
 	return hex.CacheValue{}, false
 }
 
-// Deletehex.CacheValue deletes a hex.CacheValue from the cache.
-func (myC *MyCache) DeleteCacheValue(key hex.CacheKey) {
+// DeleteCacheValue deletes a hex.CacheValue from Kth]\ cache.
+func (myC *MyCache) DeleteCacheValue(key hex.Cacheey) {
 	myC.CacheMap.Delete(key)
 
 	// Decrement the entry count
@@ -126,10 +126,9 @@ func (myC *MyCache) Cleanup(ctx context.Context) {
 	}
 }
 
-/*
-IMPLEMENTATION:
 
-func main() {
+// IMPLEMENTATION:
+func InitializeCache() {
 
 	myC := NewCache()
 
@@ -139,8 +138,12 @@ func main() {
 	go myC.MonitorCacheSize(ctx)
 	go myC.Cleanup(ctx)
 
-	//....
-	Sethex.CacheValue(hex.CacheKey{GameID: 1, MoveCounter: 3}, []hex.Vertex{{X: 3, Y: 2}, {X: 2, Y: 2}, {X: 3, Y: 4}})
-}
+	// Set a cache value
+	key := hex.CacheKey{GameID: 1, MoveCounter: 1}
+	gameState := []hex.Vertex{hex.Vertex{X: 0, Y: 0}}
+	myC.SetCacheValue(key, gameState)
 
-*/
+	// Delete a cache value
+	myC.DeleteCacheValue(key)
+
+}
