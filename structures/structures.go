@@ -2,7 +2,8 @@ package models
 
 import (
 	"time"
-
+	"encodiong
+	json"
 	"github.com/google/uuid"
 	pgxpool "github.com/jackc/pgx/v5/pgxpool"
 )
@@ -27,19 +28,44 @@ type Topic struct {
 type SliceOfSubscribeChans []chan []byte // an array of all the channels that subscribe to a given topic,
 // when a message is published to a particular topic, its broadcasted to all the subscribers in this slice
 
-type LobbyEvent struct {
-	Data       [2]string
-	Originator string
-	TimeStamp  int64 //  a unix timestamp in nano
+// -,-,-,-,-,- Lobby stuff -`-`-`-`-`- \\
+type PlayerInfo struct {
+    PlayerID int    `json:"player_id"`
+    Username string `json:"username"`
+    Rank     int    `json:"rank"`
 }
 
-type Player struct {
-	PlayerID     string      // other info like the usernae and rank and stuff I will just store elsewhere in a map
-	LobbyChannel chan []byte // the player receives on this channel from the lobby
-	EventChannel chan []byte // the player broadcasts on this channel to the lobby
+type LobbyEvent struct {
+    PlayerInfo PlayerInfo `json:"player_info"` // Corrected field definition
+    Timestamp  uint16     `json:"timestamp"`   
+    Originator string     `json:"originator"`
+    Recipients string     `json:"recipients"`
+}
+
+
+// SendEvent allows any part of the application to send an event to the central event stream.
+func SendEvent_playerEnterLobby(playerInfo PlayerInf) {
+    event := LobbyEvent{
+		PlayerInfo:  playerInfo
+		Timestamp: time.Now().UnixNano,
+		Originator: "NewPlayer", // this needs to be a unique string so that the message can be easily scanned and properly directed
+		Recipients: "Lobby",
+	}
+	
+	err, msg = json.Marshal(event) 
+   
+	if err != nil {
+    eventStream <- msg // Send the event to the channel
+	}
 }
 
 // -,-,-,-,-,- CAST OF CHARACTERS IN EACH GAME -`-`-`-`-`- \\
+
+type Player struct {
+	PlayerID     string      // other info like the usernae and rank and stuff I will just store in a map that lives in LOBBY
+	LobbyChannel chan []byte // the player receives on this channel from the lobby
+	EventChannel chan []byte // the player broadcasts on this channel to the lobby
+}
 
 type TimerController interface {
 	StartTimer()
@@ -104,7 +130,7 @@ type Game struct {
 	PlayerAID     uuid.UUID `db:"playerA_id"`
 	PlayerBID     uuid.UUID `db:"playerB_id"`
 	Outcome       string    `db:"outcome"`
-	GameStartTime time.Time `db:"game_start_time"`
+	GameStartTime time.Time`db:"game_start_time"`
 }
 
 type Move struct {

@@ -35,11 +35,12 @@ func main() {
 	ctx, cancelF := context.WithCancel(context.Background())
 
 	// lobby starts listening for matchmaking events and broadcasting them to the players
-	go lobby.MatchmakingLoop(ctx)
+	go lobby.ListenForMatchmaking(ctx)
 
 	// to create a new GameEventBus instances
 
 	game := manager.createAndRegisterNewGameBus(ctx)
+
 	// wait for the signal...
 	game.Shutdown(cancelF)
 
@@ -145,7 +146,14 @@ func (manager *GameEventBusManager) CreateRefereePool(maxGoroutines int) *Refere
 	return p
 }
 
-func (manager *GameEventBusManager) RunRefPool
+func (manager *GameEventBusManager) RunRefPool() {
+	refPool := m.CreateRefereePool(maxNGamesConcurrently)
+	
+}
+
+
+
+
 func (rp *RefereePool) RefRoutine() {
 	for task := range rp.RefTasks {
 		err := task.Process(task.Data) // ?????
@@ -177,8 +185,7 @@ func (geb *GameEventBus) marshalAndForward(inChan chan hex.EvtData) {
 				return // channel closed
 			}
 
-			jsonData, err := json.Marshal(evt)
-			if err != nil {
+			j
 				jsonData, err = json.Marshal(evt)
 				if err != nil {
 					// log.Printf("Error marshaling event data: %v", err)

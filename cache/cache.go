@@ -53,7 +53,7 @@ func (myC *MyCache) SetCacheValue(key hex.CacheKey, gameState []hex.Vertex) {
 
 	// Increment the entry count
 	atomic.AddInt64(&myC.entryCount, 1)
-) (hex.CacheValue, bool) {
+	(hex.CacheValue, bool) {
 	entry, ok := myC.CacheMap.Load(key)
 }
 

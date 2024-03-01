@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -24,9 +25,8 @@ import (
 	evt "github.com/mikeyg42/HexGame/structures/lobby"
 )
 
-const topicCodeLength = 5 // fixed legth of the topic code
+const topicCodeLength = 5                  // fixed legth of the topic code
 const heartbeatInterval = time.Second * 30 // 30 seconds, adjust as needed
-
 
 // move this to the main MAIN funtion
 func main() {
@@ -37,15 +37,12 @@ func main() {
 		panic(err)
 	}
 
-
-
-
-    go func() {
-        for {
-            time.Sleep(heartbeatInterval)
-            lobbyServ.UnresponsiveClients()
-        }
-    }()
+	go func() {
+		for {
+			time.Sleep(heartbeatInterval)
+			lobbyServ.UnresponsiveClients()
+		}
+	}()
 
 }
 
@@ -116,9 +113,8 @@ type lobbyServer struct {
 	subscribersMu sync.Mutex
 	subscribers   map[*subscriber]struct{} // struct contains the events channel and a func to call if they "cant hang"
 
-	lastHeartbeat time.Time  // Add this field to track the last heartbeat
+	lastHeartbeat time.Time // Add this field to track the last heartbeat
 }
-
 
 type myServer struct {
 	server *http.Server
@@ -160,15 +156,14 @@ func newChatServer() *lobbyServer {
 
 // EventMsgs are sent on the EventMessage channel and .
 type subscriber struct {
-	evts         chan []byte // channel to receive dispatches from eventBus
-	closeTooSlow func()      // if the client cannot keep up with the eventMsgs, closeTooSlow is called
-	lastHeartbeat time.Time 	// will allow us to ascertain if the client is still connected/responsive
+	evts          chan []byte // channel to receive dispatches from eventBus
+	closeTooSlow  func()      // if the client cannot keep up with the eventMsgs, closeTooSlow is called
+	lastHeartbeat time.Time   // will allow us to ascertain if the client is still connected/responsive
 }
 
 func (lobbyServ *lobbyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	lobbyServ.serveMux.ServeHTTP(w, r)
 }
-
 
 // subscribeHandler accepts the WebSocket connection and then subscribes
 // it to all future event messages. (Newly Refactored Version)
@@ -210,14 +205,14 @@ func (lobbyServ *lobbyServer) subscribeHandler(w http.ResponseWriter, r *http.Re
 }
 
 func (lobbyServ *lobbyServer) checkUnresponsiveClients() {
-    lobbyServ.subscribersMu.Lock()
-    defer lobbyServ.subscribersMu.Unlock()
+	lobbyServ.subscribersMu.Lock()
+	defer lobbyServ.subscribersMu.Unlock()
 
-    for s := range lobbyServ.subscribers {
-        if time.Since(s.lastHeartbeat) > 2*heartbeatInterval {
-            go s.closeTooSlow() // or any other action you deem appropriate
-        }
-    }
+	for s := range lobbyServ.subscribers {
+		if time.Since(s.lastHeartbeat) > 2*heartbeatInterval {
+			go s.closeTooSlow() // or any other action you deem appropriate
+		}
+	}
 }
 
 // publishHandler reads the request body with a limit of 8192 bytes and then publishes
@@ -249,7 +244,7 @@ func (lobbyServ *lobbyServer) subscribe(ctx context.Context, c *websocket.Conn) 
 			c.Close(websocket.StatusPolicyViolation, "connection too slow to keep up with eventMsgs")
 		},
 	}
- 
+
 	lobbyServ.AddSubscriber(s)
 	defer lobbyServ.DeleteSubscriber(s)
 
@@ -301,9 +296,8 @@ func writeTimeout(ctx context.Context, timeout time.Duration, c *websocket.Conn,
 	defer cancel()
 
 	return c.Write(ctx, websocket.MessageType(websocket.StatusInternalError), msg)
-	
-}
 
+}
 
 // sendHeartbeatMessages sends heartbeat messages at regular intervals
 func (lobbyServ *lobbyServer) sendHeartbeatMessages(ctx context.Context, c *websocket.Conn) error {
@@ -325,7 +319,6 @@ func (lobbyServ *lobbyServer) sendHeartbeatMessages(ctx context.Context, c *webs
 	}
 }
 
-
 func ReadFromWebsocket(ctx context.Context, c *websocket.Conn) (string, []byte, error) {
 
 	msg := make([]byte, 0, 1024)
@@ -335,8 +328,8 @@ func ReadFromWebsocket(ctx context.Context, c *websocket.Conn) (string, []byte, 
 	}
 
 	// Ensure you've read enough bytes for the topic.
-	if len(msg) < topicCodeLength+2 { 
-		// this +2 is not arbitrary. there will be  # delimiting topic and msg. and msg must be at least 1 char. 
+	if len(msg) < topicCodeLength+2 {
+		// this +2 is not arbitrary. there will be  # delimiting topic and msg. and msg must be at least 1 char.
 		return "", nil, errors.New("message too short to contain topic... abort before reading payload")
 	}
 
@@ -366,7 +359,7 @@ func handleWebsocketConnection(ctx context.Context, c *websocket.Conn, geb *evt.
 		}
 
 		// Here, you can prepend the topic.
-		topic := "YOUR_TOPIC" // You need to determine how to set the topic.
+		topic := "YOUR_TOPIC"                             // You need to determine how to set the topic.
 		msgWithTopic := prependTopicToPayload(topic, msg) // prepends with the correct delimiter
 
 		geb.DispatchMessage(String(msgWithTopic))
@@ -403,7 +396,6 @@ func (lobbyServ *lobbyServer) handleWebSocketEvents(ctx context.Context, c *webs
 	}
 }
 
-
 // processMessage handles different types of messages received over WebSocket
 func (lobbyServ *lobbyServer) processMessage(messageType int, message []byte) error {
 	// Parse and handle different message types
@@ -413,14 +405,13 @@ func (lobbyServ *lobbyServer) processMessage(messageType int, message []byte) er
 		return lobbyServ.handleMove(message)
 	case MessageTypeConnectivityCheck:
 		return lobbyServ.handleConnectivityCheck()
-	case MessageTypeShutdown:.;
+	case MessageTypeShutdown:
+
 		return lobbyServ.handleShutdown()
 	default:
 		return fmt.Errorf("unknown message type: %d", messageType)
 	}
 }
-
-
 
 // handleConnectivityCheck handles a connectivity check message
 func (lobbyServ *lobbyServer) handleConnectivityCheck() error {

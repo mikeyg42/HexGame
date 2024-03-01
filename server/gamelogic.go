@@ -22,7 +22,6 @@ const (
 )
 
 
-/
 // game board is going to be a 15x15 parallelogra. for now, at least. We will use axial coordinates with the y-axis turnd fro its usual position orthogonal to the x downwards arouund/./
 // with 1,1 being the bottom left corner.
 
