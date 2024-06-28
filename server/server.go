@@ -40,14 +40,56 @@ func main() {
 	go func() {
 		for {
 			time.Sleep(heartbeatInterval)
-			lobbyServ.UnresponsiveClients()
+			lobbyServ.handleUnresponsiveClients()
 		}
 	}()
 
 }
 
-// run initializes the lobbyServer and starts the HTTP server.
-func runWebsocketServer(lb *lobbyServer, tcpAddr string) error {
+
+type ConnectionMetrics struct {
+	activeConnections    int64
+	totalConnections     int64
+	connectionDurations  []time.Duration
+	stateCounts          map[http.ConnState]int64
+	mu                   sync.Mutex // Protects all fields
+}
+
+var metrics = ConnectionMetrics{
+	stateCounts: make(map[http.ConnState]int64),
+	connectionDurations: make([]time.Duration, 0),
+}
+
+func connState(conn net.Conn, state http.ConnState) {
+	metrics.mu.Lock()
+	defer metrics.mu.Unlock()
+	metrics.stateCounts[state]++
+}
+
+func logMetrics(ctx context.Context) {
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			metrics.mu.Lock()
+			log.Printf("Total Connections: %d, Active Connections: %d", metrics.totalConnections, metrics.activeConnections)
+			for state, count := range metrics.stateCounts {
+				log.Printf("State %v: %d", state, count)
+			}
+			metrics.mu.Unlock()
+		case <-ctx.Done():
+			log.Println("Shutting down metrics logger...")
+			metrics.mu.Lock()
+			log.Println("Final metrics snapshot:")
+			metrics.mu.Unlock() // Ensure the mutex is unlocked after logging
+			return
+		}
+	}
+}
+
+func runWebsocketServer(lb *gameLocus, tcpAddr string) error {
 	mainCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -57,46 +99,50 @@ func runWebsocketServer(lb *lobbyServer, tcpAddr string) error {
 	}
 	log.Printf("listening on http://%v", listener.Addr())
 
-	// Create a new HTTP server and set the base context to our main context.
-	server := &http.Server{
+	s := &http.Server{
+		Addr: tcpAddr,
 		Handler: newChatServer(),
 		BaseContext: func(_ net.Listener) context.Context {
 			return mainCtx
 		},
 		ReadTimeout:  time.Second * 10,
 		WriteTimeout: time.Second * 10,
-		// set the max read and write too??
+		IdleTimeout: time.Second * 120,
+		ConnState: connState,
 	}
-	s := &myServer{server: server}
 
-	// make error channel to consolidate for errors from the server
-	egroup, eGroupCtx := errgroup.WithContext(s.server.BaseContext(listener))
+	// Handling graceful shutdown
+	defer s.RegisterOnShutdown(func() {
+		log.Println("Server is shutting down..."
+	
+	})
+
+	
+	egroup, eGroupCtx := errgroup.WithContext(mainCtx)
 
 	// Goroutine for serving HTTP
 	egroup.Go(func() error {
-		return server.Serve(listener)
+		return s.Serve(listener)
 	})
 
-	// Goroutine to handle shutdown signals
+	// Goroutine for metrics logging
 	egroup.Go(func() error {
-		// Wait for all goroutines in the errgroup
-		if err := egroup.Wait(); err != nil && err != http.ErrServerClosed {
-			defer s.server.Shutdown(eGroupCtx)
-
-			log.Printf("failed to serve: %v", err)
-
-			return err
-		}
+		logMetrics(eGroupCtx)
 		return nil
 	})
 
-	s.server.RegisterOnShutdown()
+	// Wait for all goroutines in the errgroup
+	if err := egroup.Wait(); err != nil && err != http.ErrServerClosed {
+		log.Printf("failed to serve: %v", err)
+		s.Shutdown(eGroupCtx) // Ensure shutdown is called with the correct context
+		return err
+	}
 
 	return nil
 }
 
-// lobbyServer enables broadcasting to a set of subscriberserver.
-type lobbyServer struct {
+// gameLocus enables broadcasting to a set of subscriberserver.
+type gameLocus struct {
 	// max number of eventMsgs that can be queued for a subscriber before it is lost. Defaults to 16.
 	subscriberEventMsgBuffer int
 
@@ -111,15 +157,19 @@ type lobbyServer struct {
 	serveMux http.ServeMux
 
 	subscribersMu sync.Mutex
-	subscribers   map[*subscriber]struct{} // struct contains the events channel and a func to call if they "cant hang"
+	subscribers   map[*subscriber]struct{} // struct contains the events channel and a func to call if they "cant hang"https://www.dailydoseme.com/blogs/hair-type-tips/type-1a-hair-in-depth-what-is-type-1a-hair-and-how-to-care-for-type-1a-hair#:~:text=The%20simpler%20the%20better%20when,and%20fighting%20off%20excess%20oil.
 
 	lastHeartbeat time.Time // Add this field to track the last heartbeat
+	
+	manager: *hex.GameEventBusManager
+	gameID: string
 }
 
 type myServer struct {
 	server *http.Server
 }
 
+// handler func for shutting down server
 func (s *myServer) ShutdownServer(eGroupCtx, mainCtx context.Context) error {
 	for {
 		select {
@@ -139,9 +189,9 @@ func (s *myServer) ShutdownServer(eGroupCtx, mainCtx context.Context) error {
 	}
 }
 
-// newChatServer constructs a lobbyServer with the defaultserver.
-func newChatServer() *lobbyServer {
-	lobbyServ := &lobbyServer{
+// newChatServer constructs a gameLocus with the defaultserver.
+func newChatServer() *gameLocus {
+	lobbyServ := &gameLocus{
 		subscriberEventMsgBuffer: 16,
 		logf:                     log.Printf,
 		subscribers:              make(map[*subscriber]struct{}),
@@ -150,6 +200,7 @@ func newChatServer() *lobbyServer {
 	lobbyServ.serveMux.Handle("/", http.FileServer(http.Dir(".")))
 	lobbyServ.serveMux.HandleFunc("/subscribe", lobbyServ.subscribeHandler)
 	lobbyServ.serveMux.HandleFunc("/publish", lobbyServ.publishHandler)
+	lobbyServ.serveMux.HandleFunc("/shutdown", lobbyServ.ShutdownServer)
 
 	return lobbyServ
 }
@@ -161,13 +212,13 @@ type subscriber struct {
 	lastHeartbeat time.Time   // will allow us to ascertain if the client is still connected/responsive
 }
 
-func (lobbyServ *lobbyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (lobbyServ *gameLocus) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	lobbyServ.serveMux.ServeHTTP(w, r)
 }
 
 // subscribeHandler accepts the WebSocket connection and then subscribes
 // it to all future event messages. (Newly Refactored Version)
-func (lobbyServ *lobbyServer) subscribeHandler(w http.ResponseWriter, r *http.Request) {
+func (lobbyServ *gameLocus) subscribeHandler(w http.ResponseWriter, r *http.Request) {
 	// Accept WebSocket connection (same as in your existing code)
 	c, err := websocket.Accept(w, r, nil)
 	if err != nil {
@@ -196,7 +247,7 @@ func (lobbyServ *lobbyServer) subscribeHandler(w http.ResponseWriter, r *http.Re
 	// Handle heartbeat messages (new)
 	g.Go(func() error {
 		return lobbyServ.sendHeartbeatMessages(ctx, c)
-	})
+	}) 
 
 	// Wait for all goroutines to finish (new)
 	if err := g.Wait(); err != nil {
@@ -204,7 +255,7 @@ func (lobbyServ *lobbyServer) subscribeHandler(w http.ResponseWriter, r *http.Re
 	}
 }
 
-func (lobbyServ *lobbyServer) checkUnresponsiveClients() {
+func (lobbyServ *gameLocus) handleUnresponsiveClients() {
 	lobbyServ.subscribersMu.Lock()
 	defer lobbyServ.subscribersMu.Unlock()
 
@@ -217,7 +268,7 @@ func (lobbyServ *lobbyServer) checkUnresponsiveClients() {
 
 // publishHandler reads the request body with a limit of 8192 bytes and then publishes
 // the received eventMsg.
-func (lobbyServ *lobbyServer) publishHandler(w http.ResponseWriter, r *http.Request) {
+func (lobbyServ *gameLocus) publishHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
@@ -235,7 +286,7 @@ func (lobbyServ *lobbyServer) publishHandler(w http.ResponseWriter, r *http.Requ
 }
 
 // creates a subscriber
-func (lobbyServ *lobbyServer) subscribe(ctx context.Context, c *websocket.Conn) error {
+func (lobbyServ *gameLocus) subscribe(ctx context.Context, c *websocket.Conn) error {
 	ctx = c.CloseRead(ctx)
 
 	s := &subscriber{
@@ -251,7 +302,7 @@ func (lobbyServ *lobbyServer) subscribe(ctx context.Context, c *websocket.Conn) 
 	for {
 		select {
 		case evt := <-s.evts:
-			if err := writeTimeout(ctx, time.Second*5, c, evt); err != nil {
+			if err := writeMsgToWebsocket_wTimeout(ctx, time.Second*5, c, evt); err != nil {
 				return err
 			}
 		case <-ctx.Done():
@@ -261,7 +312,7 @@ func (lobbyServ *lobbyServer) subscribe(ctx context.Context, c *websocket.Conn) 
 }
 
 // publish publishes an evt to all subscribers. It never blocks and so eventMsgs to slow subscribers are dropped.
-func (lobbyServ *lobbyServer) publish(evt []byte) {
+func (lobbyServ *gameLocus) publish(evt []byte) {
 	lobbyServ.subscribersMu.Lock()
 	defer lobbyServ.subscribersMu.Unlock()
 
@@ -277,21 +328,21 @@ func (lobbyServ *lobbyServer) publish(evt []byte) {
 }
 
 // AddSubscriber registers a subscriber into the map.
-func (lobbyServ *lobbyServer) AddSubscriber(s *subscriber) {
+func (lobbyServ *gameLocus) AddSubscriber(s *subscriber) {
 	lobbyServ.subscribersMu.Lock()
 	lobbyServ.subscribers[s] = struct{}{}
 	lobbyServ.subscribersMu.Unlock()
 }
 
 // removes a subscriber from the map of subscribers
-func (lobbyServ *lobbyServer) DeleteSubscriber(s *subscriber) {
+func (lobbyServ *gameLocus) DeleteSubscriber(s *subscriber) {
 	lobbyServ.subscribersMu.Lock()
 	delete(lobbyServ.subscribers, s)
 	lobbyServ.subscribersMu.Unlock()
 }
 
-// writeTimeout writes a message to the WebSocket connection with a timeout
-func writeTimeout(ctx context.Context, timeout time.Duration, c *websocket.Conn, msg []byte) error {
+// writeMsgToWebsocket_wTimeout writes a message to the WebSocket connection with a timeout
+func writeMsgToWebsocket_wTimeout(ctx context.Context, timeout time.Duration, c *websocket.Conn, msg []byte) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -299,8 +350,19 @@ func writeTimeout(ctx context.Context, timeout time.Duration, c *websocket.Conn,
 
 }
 
+func WriteToWebsocket(ctx context.Context, c *websocket.Conn, msg []byte) error {
+	yn_json := json.Valid([]byte(msg)) && len(msg) < 2
+	if yn_json {
+		err := wsjson.Write(ctx, c, msg)
+		return err
+	} else {
+		return errors.New("message is not valid json")
+	}
+}
+
+
 // sendHeartbeatMessages sends heartbeat messages at regular intervals
-func (lobbyServ *lobbyServer) sendHeartbeatMessages(ctx context.Context, c *websocket.Conn) error {
+func (lobbyServ *gameLocus) sendHeartbeatMessages(ctx context.Context, c *websocket.Conn) error {       
 	ticker := time.NewTicker(heartbeatInterval)
 	defer ticker.Stop()
 
@@ -308,7 +370,7 @@ func (lobbyServ *lobbyServer) sendHeartbeatMessages(ctx context.Context, c *webs
 		select {
 		case <-ticker.C:
 			heartbeatMsg := []byte("heartbeat")
-			if err := writeTimeout(ctx, time.Second*5, c, heartbeatMsg); err != nil {
+			if err := writeMsgToWebsocket_wTimeout(ctx, time.Second*5, c, heartbeatMsg); err != nil {
 				lobbyServ.logf("Heartbeat failed: %v", err)
 				return err
 			}
@@ -338,15 +400,6 @@ func ReadFromWebsocket(ctx context.Context, c *websocket.Conn) (string, []byte, 
 	return topic, msg[topicCodeLength:], nil
 }
 
-func WriteToWebsocket(ctx context.Context, c *websocket.Conn, msg []byte) error {
-	yn_json := json.Valid([]byte(msg)) && len(msg) < 2
-	if yn_json {
-		err := wsjson.Write(ctx, c, msg)
-		return err
-	} else {
-		return errors.New("message is not valid json")
-	}
-}
 
 func handleWebsocketConnection(ctx context.Context, c *websocket.Conn, geb *evt.GameEventBus) {
 
@@ -371,7 +424,7 @@ func prependTopicToPayload(topic string, payload []byte) []byte {
 	return append(topicBytes, payload...)
 }
 
-func (lobbyServ *lobbyServer) handleWebSocketEvents(ctx context.Context, c *websocket.Conn) error {
+func (lobbyServ *gameLocus) handleWebSocketEvents(ctx context.Context, c *websocket.Conn) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -397,7 +450,7 @@ func (lobbyServ *lobbyServer) handleWebSocketEvents(ctx context.Context, c *webs
 }
 
 // processMessage handles different types of messages received over WebSocket
-func (lobbyServ *lobbyServer) processMessage(messageType int, message []byte) error {
+func (lobbyServ *gameLocus) processMessage(messageType int, message []byte) error {
 	// Parse and handle different message types
 	// Example: MessageTypeMove, MessageTypeConnectivityCheck, MessageTypeShutdown
 	switch messageType {
@@ -414,11 +467,11 @@ func (lobbyServ *lobbyServer) processMessage(messageType int, message []byte) er
 }
 
 // handleConnectivityCheck handles a connectivity check message
-func (lobbyServ *lobbyServer) handleConnectivityCheck() error {
+func (lobbyServ *gameLocus) handleConnectivityCheck() error {
 	// Perform necessary actions to check and confirm connectivity
 }
 
 // handleShutdown handles a shutdown message, indicating a game or server shutdown
-func (lobbyServ *lobbyServer) handleShutdown() error {
+func (lobbyServ *gameLocus) handleShutdown() error {
 	// Perform necessary actions for a graceful shutdown
 }

@@ -84,7 +84,7 @@ type Referee interface {
 	EvaluateProposedMoveLegality()
 	EvaluateWinCondition()
 	BroadcastGameEnd()
-	BroadcastConnectionFail()
+	BroadcastConnectionFail()   
 	DemandPlayersAck()
 }
 

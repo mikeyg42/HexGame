@@ -41,9 +41,26 @@ func main() {
 
 	game := manager.createAndRegisterNewGameBus(ctx)
 
+
+	// Example usage: Subscribe a new client to a topic
+	clientChan := make(chan []byte)
+	game.Subscribe("TimerTopic", clientChan)
+
+	// Example usage: Publish a message to a topic
+	message := hex.EvtData{
+		Topic: hex.Topic{TopicName: "TimerTopic"},
+		Data:  "Some event data",
+	}
+	game.Publish(message)
+
+
+
+
+
+
 	// wait for the signal...
 	game.Shutdown(cancelF)
-
+.
 	// TBD
 
 }
@@ -127,7 +144,7 @@ func generateUniqueGameID() string {
 func createAllGameChannels() map[string]chan []byte {
 
 	var folksAttendingGame = []string{"playerA", "playerB", "referee", "timer", "lobby", "memory"}
-	allGameChannels := make(map[string]chan []byte) //this is the sole output, a map withj keys of player IDs and values of their respective channels
+	allGameChannels := make(map[string]chan []byte) //this is the sole output, a map with keys of player IDs and values of their respective channels
 
 	for _, person := range folksAttendingGame {
 		allGameChannels[person] = make(chan []byte)
@@ -146,22 +163,7 @@ func (manager *GameEventBusManager) CreateRefereePool(maxGoroutines int) *Refere
 	return p
 }
 
-func (manager *GameEventBusManager) RunRefPool() {
-	refPool := m.CreateRefereePool(maxNGamesConcurrently)
-	
-}
 
-
-
-
-func (rp *RefereePool) RefRoutine() {
-	for task := range rp.RefTasks {
-		err := task.Process(task.Data) // ?????
-		if err != nil {
-			// Handle the error or send it to a results channel
-		}
-	}
-}
 
 func (geb *GameEventBus) Shutdown(cancel context.CancelFunc) {
 	defer cancel()
@@ -185,12 +187,10 @@ func (geb *GameEventBus) marshalAndForward(inChan chan hex.EvtData) {
 				return // channel closed
 			}
 
-			j
 				jsonData, err = json.Marshal(evt)
 				if err != nil {
 					// log.Printf("Error marshaling event data: %v", err)
 					continue // Skip this iteration and
-				}
 			}
 
 			geb.Rwm.RLock()
@@ -227,6 +227,7 @@ func (geb *GameEventBus) DefineTopicSubscriptions(topics []hex.Topic) {
 		case "GameLogicTopic":
 			// the players+ref will publish and subscribe to this topic, as will the memory subscribe
 			subscriberSlice = append(subscriberSlice, geb.AllSubscriberChannels["playerA"], geb.AllSubscriberChannels["playerB"], geb.AllSubscriberChannels["referee"], geb.AllSubscriberChannels["memory"])
+	
 		case "MetagameTopic":
 			// publishers will be the referee. timer and 2 players will listen (timer so it can stop the timer if need be, and players so front end can pause and ack reconnect)
 			subscriberSlice = append(subscriberSlice, geb.AllSubscriberChannels["playerA"], geb.AllSubscriberChannels["playerB"], geb.AllSubscriberChannels["timer"])
@@ -306,12 +307,29 @@ func (geb *GameEventBus) getChannelsForTopic(topic string) ([]chan []byte, bool)
 	return chs, ok
 }
 
-type RefereePool struct {
-	RefTasks chan RefTask
-}
 
-type RefTask struct {
-	Process func([]byte) error
-	Data    []byte
-}
+// type RefereePool struct {
+// 	RefTasks chan RefTask
+// }
 
+// type RefTask struct {
+// 	Process func([]byte) error
+// 	Data    []byte
+// }
+
+// func (manager *GameEventBusManager) RunRefPool() {
+// 	refPool := m.CreateRefereePool(maxNGamesConcurrently)
+	
+// }
+
+
+
+
+// func (rp *RefereePool) RefRoutine() {
+// 	for task := range rp.RefTasks {
+// 		err := task.Process(task.Data) // ?????
+// 		if err != nil {
+// 			// Handle the error or send it to a results channel
+// 		}
+// 	}
+// }

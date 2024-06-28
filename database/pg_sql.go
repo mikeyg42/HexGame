@@ -19,6 +19,7 @@ import (
 	pgxUUID "github.com/vgarvardt/pgx-google-uuid/v5"
 )
 
+// global
 type MemoryPersister struct{}
 
 const maxReadPoolSize = 10
@@ -647,6 +648,7 @@ func AddNewUser(username, passwordHash string, pool *pgxpool.Pool) (uuid.UUID, e
 	defer cancel()
 
 	var newUserID uuid.UUID
+	// i need to define this still	
 	err := pool.QueryRow(ctx, "add_new_user", username, passwordHash).Scan(&newUserID)
 
 	if err != nil {
@@ -688,6 +690,6 @@ func Persist_EndGame(lastMove hex.Move, pool *pgxpool.Pool) error {
 	return err
 }
 
-// ensure that MemoryPersister implements all the methods of the _Persister interface,
+// SANITYCHECK! this ensure that MemoryPersister implements all the methods of the _Persister interface,
 // even though the _Persister global variable is not used anywhere in the code.
 var _Persister = &MemoryPersister{}

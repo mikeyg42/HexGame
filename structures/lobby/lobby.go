@@ -39,7 +39,6 @@ func NewLobby() *Lobby {
 }
 
 // ParseMatchmakersMsg parses the JSON message from the matchmaking service and returns the player IDs to be paired for a game.
-ıZZZE´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´B◊√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√BNVGC CZXVDN ZCXDVZXZ CVXı¸¸¸¸¸¸¸¸¸¸¸¸¸¸¸¸¸¸¸¸¸¸¸ ZXBVD ◊ÇÍ˛˛˛˛˛˛˛˛˛˛˛˛˛˛˛˛˛˛˛˛˛˛˛Z≈ÇÍ√√√√√√◊◊◊◊◊◊◊◊◊◊◊◊◊◊◊◊◊◊◊◊◊◊◊◊◊◊◊√√√√Ízz∫ v
 func (l *Lobby) ListenForMMResponse(ctx context.Context, playerIDs [2]string) {
 	// listen for the matchmaking service to send a message to the lobby indicating what two players will be paired to duel
 	for {

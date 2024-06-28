@@ -45,7 +45,121 @@ const (
 // used by memoryTool and refereeTool??
 // newVert is in abolute coordinates, not relative to the identity of the player, ie player A and B's moves are in the same coord syst4em and there should be no overlaps
 // updatedMoveList has the moves of BOTH players
-func IncorporateNewVert(ctx context.Context, allMoveList []hex.Vertex, adjGraph [][]int, newVert hex.Vertex) (newAdjacencyGraph [][]int, updatedMoveList []hex.Vertex) {
+
+
+// Game represents the state of a single game.
+type Game struct {
+    ID          string
+    Players     [2]*Player // Assuming a Player struct is defined elsewhere
+    GameState   GameState  // Assuming a GameState struct/type is defined elsewhere
+    LastMove    time.Time
+    MoveTimeout time.Duration
+}
+
+// RefTask represents a task for a referee to process.
+type RefTask struct {
+    GameID string
+    Data   interface{} // Data could be a move, a connectivity check, etc.
+    Action func(context.Context, *Game, interface{}) error // Function to process the task
+}
+
+// RefereePool manages a pool of referees (goroutines) to process tasks.
+type RefereePool struct {
+    RefTasks   chan RefTask
+    Games      map[string]*Game // Active games managed by the referees
+    GamesMutex sync.RWMutex     // Protects the Games map
+    DB         *Database        // Assuming a Database struct is defined for game state persistence
+}
+
+func NewRefereePool(maxGoroutines int, db *Database) *RefereePool {
+    p := &RefereePool{
+        RefTasks: make(chan RefTask, maxGoroutines*2), // Buffer to prevent blocking
+        Games:    make(map[string]*Game),
+        DB:       db,
+    }
+    for i := 0; i < maxGoroutines; i++ {
+        go p.RefRoutine()
+    }
+    return p
+}
+
+func (rp *RefereePool) RefRoutine() {
+    for task := range rp.RefTasks {
+        rp.GamesMutex.RLock()
+        game, exists := rp.Games[task.GameID]
+        rp.GamesMutex.RUnlock()
+
+        if !exists {
+            // Handle error: Game not found
+            continue
+        }
+
+        ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) // Adjust as needed
+        err := task.Action(ctx, game, task.Data)
+        cancel()
+
+        if err != nil {
+            // Handle the error (log it, notify players, etc.)
+        }
+
+        // Optional: persist game state to the database after each action
+        err = rp.DB.PersistGameState(game)
+        if err != nil {
+            // Handle persistence error
+        }
+    }
+}
+
+func (rp *RefereePool) AddGame(game *Game) {
+    rp.GamesMutex.Lock()
+    rp.Games[game.ID] = game
+    rp.GamesMutex.Unlock()
+}
+
+func (rp *RefereePool) RemoveGame(gameID string) {
+    rp.GamesMutex.Lock()
+    delete(rp.Games, gameID)
+    rp.GamesMutex.Unlock()
+}
+
+// Example of how to add a task to the RefTasks channel
+func (rp *RefereePool) SubmitTask(task RefTask) {
+    rp.RefTasks <- task
+}
+
+// Assuming a Database struct and a method for persisting game state are defined elsewhere
+type Database struct {
+    // Implementation details...
+}
+
+func main() {
+    // Example usage
+    db := &Database{} // Initialize your database connection here
+    refereePool := NewRefereePool(10, db) // Adjust the number of goroutines as needed
+
+    // Example of creating a game and adding it to the referee pool
+    game := &Game{
+        ID:          "game123",
+        MoveTimeout: 30 * time.Second,
+        // Initialize other fields...
+    }
+    refereePool.AddGame(game)
+
+    // Submit tasks as needed
+    task := RefTask{
+        GameID: game.ID,
+        Data:   nil, // Your task data here
+        Action: func(ctx context.Context, game *Game, data interface{}) error {
+            // Your task processing logic here
+            return nil
+        },
+    }
+    refereePool.SubmitTask(task)
+
+    // handle game removal and referee pool shutdown 
+}
+
+func (r *Ref)IncorporateNewVert(ctx context.Context, allMoveList []hex.Vertex, adjGraph [][]int, newVert hex.Vertex) (newAdjacencyGraph [][]int, updatedMoveList []hex.Vertex) {
 	// it is assumed that the newVert is a valid move, so we don't need to check for that here
 
 	// Update Moves
